@@ -42,3 +42,27 @@ fundautopsy_dashboard*.html
 fundautopsy_report_*.html
 dashboard.html
 hype-video.html
+
+# Leaderboard data (user-generated, not committed)
+data/leaderboard.json
+
+# Concept mockups
+autopsy_report_concept.html
+
+# Internal operational documentation (not for public repo)
+docs/persona_package.md
+docs/hype_video_script.md
+docs/ncen_novel_angles.md
+docs/release_roadmap.md
+docs/research_synthesis.md
+
+# Internal validation and audit reports
+VALIDATION_REPORT.md
+ISSUES_FOR_TWITTER_SCRUTINY.md
+
+# Content directory (internal strategy, design, drafts)
+content/
+
+# Local data and generated artifacts
+data/
+.coverage*
