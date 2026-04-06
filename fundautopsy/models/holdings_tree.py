@@ -46,6 +46,7 @@ class FundNode:
 
     @property
     def is_fund_of_funds(self) -> bool:
+        """True if this node has underlying fund holdings."""
         return len(self.children) > 0
 
     def walk(self) -> list[FundNode]:

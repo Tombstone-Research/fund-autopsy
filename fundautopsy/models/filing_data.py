@@ -29,6 +29,7 @@ class TaggedValue:
 
     @property
     def is_available(self) -> bool:
+        """True if value exists and is not marked unavailable or not disclosed."""
         return self.value is not None and self.tag not in (
             DataSourceTag.UNAVAILABLE,
             DataSourceTag.NOT_DISCLOSED,

@@ -25,7 +25,6 @@ Academic references:
 from __future__ import annotations
 
 import re
-import math
 from dataclasses import dataclass
 from typing import Optional, List
 

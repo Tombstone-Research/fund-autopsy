@@ -155,6 +155,11 @@
         </div>
       </div>
 
+      <!-- Key Findings — compact verdicts from SAI, N-CSR, fee history (loads async) -->
+      <div id="findingsStrip" class="findings-strip" style="display:none">
+        <div id="findingsContent" class="findings-content"></div>
+      </div>
+
       <!-- What Your Fund Is Hiding Section -->
       <div id="conflictHighlightSection" style="display:none;margin-bottom:28px">
         <div class="conflict-highlight-panel">
@@ -273,8 +278,35 @@
       <div class="section-title">Service Providers</div>
       <div id="providersContainer"></div>
 
+      <!-- Fee History (485BPOS amendments) -->
+      <div id="feeHistorySection" style="display:none;margin-top:28px">
+        <div class="section-title">Fee Change History</div>
+        <div class="section-subtitle" style="font-size:12px;color:var(--text-dim);margin-bottom:12px">
+          Tracked from historical 485BPOS prospectus amendments on EDGAR.
+        </div>
+        <div id="feeHistoryContent" style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px 20px"></div>
+      </div>
+
+      <!-- SAI (Statement of Additional Information) -->
+      <div id="saiSection" style="display:none;margin-top:28px">
+        <div class="section-title">Statement of Additional Information</div>
+        <div class="section-subtitle" style="font-size:12px;color:var(--text-dim);margin-bottom:12px">
+          From the fund's 485BPOS filing. Data investors only get "upon request."
+        </div>
+        <div id="saiContent"></div>
+      </div>
+
+      <!-- N-CSR (Shareholder Reports) -->
+      <div id="ncsrSection" style="display:none;margin-top:28px">
+        <div class="section-title">Shareholder Report (N-CSR)</div>
+        <div class="section-subtitle" style="font-size:12px;color:var(--text-dim);margin-bottom:12px">
+          Audited commission history and turnover from annual shareholder reports.
+        </div>
+        <div id="ncsrContent"></div>
+      </div>
+
       <div style="background:var(--surface-2);border-left:2px solid var(--border);border-radius:6px;padding:16px;margin-top:32px;font-size:12px;color:var(--text-dim);line-height:1.6">
-        Data sourced from SEC Form N-CEN (fund operating information) and N-PORT (holdings and portfolio). All data is public and available via EDGAR.
+        Data sourced from SEC Form N-CEN, N-PORT, N-CSR, SAI (485BPOS), and 497K. All data is public and available via EDGAR.
       </div>
     </div>
 

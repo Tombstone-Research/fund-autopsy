@@ -16,6 +16,11 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from fundautopsy.models.filing_data import DataSourceTag
+from fundautopsy.data.leaderboard import (
+    update_leaderboard, get_leaderboard, get_leaderboard_stats,
+)
+from fundautopsy.data.fee_tracker import track_fee_changes, FeeHistory
+from fundautopsy.data.ncsr_parser import parse_ncsr_for_cik
 
 app = FastAPI(title="Fund Autopsy", version="0.1.0")
 
@@ -34,6 +39,8 @@ if os.path.isdir(_static_dir):
 
 
 class CostComponent(BaseModel):
+    """A single cost component in the fund's cost breakdown."""
+
     label: str
     value: Optional[str]
     low: Optional[float] = None
@@ -43,12 +50,16 @@ class CostComponent(BaseModel):
 
 
 class FeeComponent(BaseModel):
+    """Fee component expressed as percentage and basis points."""
+
     label: str
     pct: Optional[float]
     bps: Optional[float]
 
 
 class AssetMix(BaseModel):
+    """Asset class allocation data."""
+
     category: str
     label: str
     color: str
@@ -56,12 +67,16 @@ class AssetMix(BaseModel):
 
 
 class BrokerInfo(BaseModel):
+    """Broker commission data."""
+
     name: str
     commission: float
     is_affiliated: bool
 
 
 class SecuritiesLendingInfo(BaseModel):
+    """Securities lending arrangement details."""
+
     is_lending: bool
     agent_name: Optional[str] = None
     is_agent_affiliated: bool = False
@@ -70,6 +85,8 @@ class SecuritiesLendingInfo(BaseModel):
 
 
 class ServiceProviders(BaseModel):
+    """Key service providers for the fund."""
+
     adviser: Optional[str] = None
     administrator: Optional[str] = None
     custodian: Optional[str] = None
@@ -80,6 +97,8 @@ class ServiceProviders(BaseModel):
 
 
 class DollarImpact(BaseModel):
+    """Dollar impact of costs over an investment horizon."""
+
     investment: float
     horizon_years: int
     assumed_return_pct: float
@@ -94,6 +113,7 @@ class DollarImpact(BaseModel):
 
 
 class FundAnalysis(BaseModel):
+    """Complete fund analysis response with all cost data."""
     ticker: str
     name: str
     family: str
@@ -451,6 +471,25 @@ def analyze_fund(ticker: str):
                     f"(offsets costs but rarely disclosed to investors)"
                 )
 
+    # --- Update leaderboard with this analysis ---
+    try:
+        update_leaderboard(
+            ticker=meta.ticker,
+            name=meta.name,
+            family=meta.fund_family or "",
+            hidden_low_bps=total_hidden_low if total_hidden_low else None,
+            hidden_high_bps=total_hidden_high if total_hidden_high else None,
+            expense_ratio_bps=expense_ratio_bps,
+            turnover_pct=portfolio_turnover,
+            net_assets_display=_fmt_dollars(na) if na else "N/A",
+            holdings_count=len(nport.holdings) if nport else 0,
+            conflict_count=len(conflict_flags),
+            dollar_impact_hidden_low=dollar_impact.hidden_cost_low,
+            dollar_impact_hidden_high=dollar_impact.hidden_cost_high,
+        )
+    except Exception:
+        pass  # Leaderboard update is non-critical
+
     return FundAnalysis(
         ticker=meta.ticker,
         name=meta.name,
@@ -487,11 +526,15 @@ def analyze_fund(ticker: str):
 
 
 class SAICommission(BaseModel):
+    """Historical brokerage commission data from SAI."""
+
     fund_name: str
     annual_commissions: Dict[int, float]
 
 
 class SAIPMCompensation(BaseModel):
+    """Portfolio manager compensation structure from SAI."""
+
     has_base_salary: bool
     has_bonus: bool
     has_equity_ownership: bool
@@ -504,12 +547,15 @@ class SAIPMCompensation(BaseModel):
 
 
 class SAISoftDollar(BaseModel):
+    """Soft dollar arrangement details from SAI."""
+
     has_soft_dollar_arrangements: bool
     uses_commission_sharing: bool
     description: str
 
 
 class SAIAnalysis(BaseModel):
+    """Complete SAI (Statement of Additional Information) analysis."""
     cik: int
     filing_date: str
     accession_no: str
@@ -627,6 +673,128 @@ def compare_funds(tickers: str):
             errors.append({"ticker": t, "error": e.detail})
 
     return {"results": results, "errors": errors}
+
+
+@app.get("/api/leaderboard")
+def leaderboard(sort_by: str = "hidden_cost_mid_bps", limit: int = 25):
+    """Return the Worst Offender leaderboard."""
+    entries = get_leaderboard(sort_by=sort_by, limit=limit)
+    stats = get_leaderboard_stats()
+    return {"entries": entries, "stats": stats}
+
+
+@app.get("/api/fee-history/{ticker}")
+def fee_history(ticker: str):
+    """Return fee change history from historical 485BPOS filings."""
+    ticker = ticker.strip().upper()
+    if not ticker.isalpha() or len(ticker) > 6:
+        raise HTTPException(400, "Invalid ticker format")
+
+    try:
+        from fundautopsy.core.fund import identify_fund
+
+        fund = identify_fund(ticker)
+        history = track_fee_changes(cik=fund.cik, ticker=ticker, max_filings=5)
+
+        snapshots = [
+            {
+                "filing_date": s.filing_date,
+                "form_type": s.form_type,
+                "management_fee": s.management_fee,
+                "twelve_b1_fee": s.twelve_b1_fee,
+                "other_expenses": s.other_expenses,
+                "total_annual_expenses": s.total_annual_expenses,
+                "net_expenses": s.net_expenses,
+                "effective_expense_ratio": s.effective_expense_ratio,
+                "max_sales_load": s.max_sales_load,
+                "portfolio_turnover": s.portfolio_turnover,
+            }
+            for s in history.snapshots
+        ]
+
+        changes = [
+            {
+                "field_label": c.field_label,
+                "old_value": c.old_value,
+                "new_value": c.new_value,
+                "change_bps": c.change_bps,
+                "direction": c.direction,
+                "old_filing_date": c.old_filing_date,
+                "new_filing_date": c.new_filing_date,
+            }
+            for c in history.changes
+        ]
+
+        return {
+            "ticker": ticker,
+            "cik": fund.cik,
+            "has_changes": history.has_changes,
+            "net_change_bps": history.net_change_bps,
+            "snapshots": snapshots,
+            "changes": changes,
+        }
+
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(500, f"Fee history failed: {e}")
+
+
+@app.get("/api/ncsr/{ticker}")
+def analyze_ncsr(ticker: str):
+    """Pull N-CSR (shareholder report) data for a fund.
+
+    Returns audited brokerage commission history, portfolio turnover
+    from financial highlights, and board advisory contract approval text.
+    """
+    ticker = ticker.strip().upper()
+    if not ticker.isalpha() or len(ticker) > 6:
+        raise HTTPException(400, "Invalid ticker format")
+
+    try:
+        from fundautopsy.core.fund import identify_fund
+
+        fund = identify_fund(ticker)
+        result = parse_ncsr_for_cik(fund.cik)
+
+        if result is None or not result.has_data:
+            raise HTTPException(
+                404, f"No N-CSR data found for {ticker} (CIK {fund.cik})"
+            )
+
+        commissions = [
+            {
+                "fund_name": nc.fund_name,
+                "annual_commissions": nc.annual_commissions,
+                "research_commissions": nc.research_commissions,
+                "recapture_amounts": nc.recapture_amounts,
+            }
+            for nc in result.commissions
+        ]
+
+        turnover = [
+            {"fund_name": nt.fund_name, "annual_turnover": nt.annual_turnover}
+            for nt in result.turnover
+        ]
+
+        return {
+            "cik": result.cik,
+            "filing_date": result.filing_date,
+            "accession_no": result.accession_no,
+            "is_annual": result.is_annual,
+            "commissions": commissions,
+            "turnover": turnover,
+            "board_approval_text": result.board_approval_text[:2000]
+            if result.board_approval_text
+            else "",
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(500, f"N-CSR analysis failed: {e}")
 
 
 @app.get("/", response_class=HTMLResponse)

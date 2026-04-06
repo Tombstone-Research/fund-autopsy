@@ -688,6 +688,261 @@ function renderDash(d) {
   document.getElementById('providersContainer').innerHTML = provHtml;
 
   show('dash');
+
+  // Reset findings strip and deep dive supplementary sections
+  document.getElementById('findingsStrip').style.display = 'none';
+  document.getElementById('findingsContent').innerHTML = '';
+  document.getElementById('saiSection').style.display = 'none';
+  document.getElementById('ncsrSection').style.display = 'none';
+  document.getElementById('feeHistorySection').style.display = 'none';
+
+  // Fetch supplementary data asynchronously (non-blocking)
+  fetchSupplementaryData(d.ticker);
+}
+
+// ── Supplementary data: SAI, N-CSR, Fee History ──
+// Design: One-line verdict chips appear on X-Ray tab.
+//         Full detail renders in Deep Dive tab.
+
+function addFinding(icon, label, verdict, severity) {
+  const strip = document.getElementById('findingsStrip');
+  const content = document.getElementById('findingsContent');
+  strip.style.display = 'block';
+  const idx = content.children.length;
+  const chip = document.createElement('div');
+  chip.className = `finding-chip finding-${severity}`;
+  chip.style.animationDelay = `${idx * 0.1}s`;
+  chip.innerHTML = `<span class="finding-icon">${icon}</span><span class="finding-label">${label}</span><span class="finding-verdict">${verdict}</span>`;
+  content.appendChild(chip);
+}
+
+async function fetchSupplementaryData(ticker) {
+  fetchSAI(ticker);
+  fetchNCSR(ticker);
+  fetchFeeHistory(ticker);
+}
+
+async function fetchSAI(ticker) {
+  const section = document.getElementById('saiSection');
+  const content = document.getElementById('saiContent');
+  section.style.display = 'none';
+
+  try {
+    const resp = await fetch(`/api/sai/${ticker}`);
+    if (!resp.ok) return;
+    const data = await resp.json();
+
+    // ── X-Ray verdict chips ──
+    if (data.pm_compensation) {
+      const pm = data.pm_compensation;
+      if (pm.compensation_not_linked_to_fund_performance) {
+        addFinding('💰', 'PM Comp:', 'Not linked to fund performance', 'red');
+      } else if (pm.bonus_linked_to_performance) {
+        addFinding('💰', 'PM Comp:', 'Tied to fund performance', 'green');
+      } else if (pm.bonus_linked_to_aum) {
+        addFinding('💰', 'PM Comp:', 'Tied to AUM, not returns', 'yellow');
+      }
+    }
+
+    if (data.soft_dollar_info && data.soft_dollar_info.has_soft_dollar_arrangements) {
+      addFinding('📋', 'SAI:', 'Soft dollar arrangements confirmed', 'red');
+    }
+
+    // ── Deep Dive detail ──
+    section.style.display = 'block';
+    let html = '';
+
+    if (data.pm_compensation) {
+      const pm = data.pm_compensation;
+      html += `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px 20px;margin-bottom:12px">
+        <div style="font-weight:600;font-size:13px;color:var(--accent);margin-bottom:10px">Portfolio Manager Compensation</div>`;
+      [
+        { label: 'Base Salary', val: pm.has_base_salary },
+        { label: 'Bonus', val: pm.has_bonus },
+        { label: 'Equity Ownership', val: pm.has_equity_ownership },
+        { label: 'Deferred Compensation', val: pm.has_deferred_comp },
+      ].forEach(item => {
+        const color = item.val ? 'var(--green)' : 'var(--text-dim)';
+        html += `<div class="cost-row"><span class="cost-label">${item.label}</span><span style="color:${color};font-weight:600">${item.val ? 'Yes' : 'No'}</span></div>`;
+      });
+      html += `<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">
+        <div style="font-size:11px;color:var(--text-dim);margin-bottom:6px;text-transform:uppercase;letter-spacing:1px">Bonus Linked To</div>`;
+      [
+        { label: 'Fund Performance', val: pm.bonus_linked_to_performance, good: true },
+        { label: 'Assets Under Management', val: pm.bonus_linked_to_aum, good: false },
+        { label: 'Firm Profit', val: pm.bonus_linked_to_firm_profit, good: false },
+      ].forEach(item => {
+        if (item.val) {
+          const color = item.good ? 'var(--green)' : 'var(--yellow)';
+          html += `<div class="cost-row"><span class="cost-label">${item.label}</span><span style="color:${color};font-weight:600">Yes</span></div>`;
+        }
+      });
+      if (pm.compensation_not_linked_to_fund_performance) {
+        html += `<div class="cost-row"><span class="cost-label" style="color:var(--red)">NOT linked to fund performance</span><span style="color:var(--red);font-weight:600">⚠</span></div>`;
+      }
+      html += '</div></div>';
+    }
+
+    if (data.soft_dollar_info) {
+      const sd = data.soft_dollar_info;
+      html += `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px 20px;margin-bottom:12px">
+        <div style="font-weight:600;font-size:13px;color:var(--accent);margin-bottom:10px">Soft Dollar Arrangements</div>
+        <div class="cost-row"><span class="cost-label">Soft Dollar Arrangements</span><span style="color:${sd.has_soft_dollar_arrangements ? 'var(--red)' : 'var(--green)'};font-weight:600">${sd.has_soft_dollar_arrangements ? 'Active' : 'None'}</span></div>
+        <div class="cost-row"><span class="cost-label">Commission Sharing</span><span style="color:${sd.uses_commission_sharing ? 'var(--yellow)' : 'var(--text-dim)'};font-weight:600">${sd.uses_commission_sharing ? 'Yes' : 'No'}</span></div>
+      </div>`;
+    }
+
+    if (data.commissions && data.commissions.length > 0) {
+      html += `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px 20px;margin-bottom:12px">
+        <div style="font-weight:600;font-size:13px;color:var(--accent);margin-bottom:10px">SAI Commission History</div>`;
+      data.commissions.forEach(c => {
+        html += `<div style="font-weight:500;font-size:12px;color:var(--text);margin-top:8px;margin-bottom:4px">${c.fund_name}</div>`;
+        Object.keys(c.annual_commissions).sort().reverse().forEach(yr => {
+          html += `<div class="cost-row"><span class="cost-label">${yr}</span><span class="cost-val">$${formatNumber(c.annual_commissions[yr])}</span></div>`;
+        });
+      });
+      html += '</div>';
+    }
+
+    if (data.conflict_flags && data.conflict_flags.length > 0) {
+      html += `<div style="background:var(--red-dim);border:1px solid rgba(239,68,68,0.25);border-radius:12px;padding:16px 20px">`;
+      data.conflict_flags.forEach(f => {
+        html += `<div style="padding:4px 0;color:var(--red);font-size:13px"><span style="margin-right:8px">⚠</span>${f}</div>`;
+      });
+      html += '</div>';
+    }
+
+    content.innerHTML = html || '<div style="color:var(--text-dim);font-size:13px;padding:8px 0">No SAI data available.</div>';
+  } catch (e) { /* SAI is supplementary */ }
+}
+
+async function fetchNCSR(ticker) {
+  const section = document.getElementById('ncsrSection');
+  const content = document.getElementById('ncsrContent');
+  section.style.display = 'none';
+
+  try {
+    const resp = await fetch(`/api/ncsr/${ticker}`);
+    if (!resp.ok) return;
+    const data = await resp.json();
+
+    // ── X-Ray verdict chip: commission trend ──
+    if (data.commissions && data.commissions.length > 0) {
+      const first = data.commissions[0];
+      const years = Object.keys(first.annual_commissions).sort();
+      if (years.length >= 2) {
+        const oldest = first.annual_commissions[years[0]];
+        const newest = first.annual_commissions[years[years.length - 1]];
+        if (oldest > 0 && newest > 0) {
+          const pctChange = ((newest - oldest) / oldest * 100).toFixed(0);
+          if (newest > oldest * 1.1) {
+            addFinding('📈', 'Commissions:', `Up ${pctChange}% over ${years.length} years`, 'red');
+          } else if (newest < oldest * 0.9) {
+            addFinding('📉', 'Commissions:', `Down ${Math.abs(pctChange)}% over ${years.length} years`, 'green');
+          } else {
+            addFinding('📊', 'Commissions:', `Stable over ${years.length} years`, 'neutral');
+          }
+        }
+      }
+    }
+
+    // ── Deep Dive detail ──
+    section.style.display = 'block';
+    let html = `<div style="font-size:12px;color:var(--text-dim);margin-bottom:12px">Filing: ${data.filing_date} (${data.is_annual ? 'Annual N-CSR' : 'Semi-Annual N-CSRS'})</div>`;
+
+    if (data.commissions && data.commissions.length > 0) {
+      html += `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px 20px;margin-bottom:12px">
+        <div style="font-weight:600;font-size:13px;color:var(--accent);margin-bottom:10px">Audited Brokerage Commissions</div>`;
+      data.commissions.forEach(c => {
+        html += `<div style="font-weight:500;font-size:12px;color:var(--text);margin-top:8px;margin-bottom:4px">${c.fund_name}</div>`;
+        Object.keys(c.annual_commissions).sort().reverse().forEach(yr => {
+          html += `<div class="cost-row"><span class="cost-label">${yr}</span><span class="cost-val">$${formatNumber(c.annual_commissions[yr])}</span></div>`;
+        });
+        if (c.research_commissions && Object.keys(c.research_commissions).length > 0) {
+          html += `<div style="margin-top:6px;font-size:11px;color:var(--yellow)">Research-Directed:</div>`;
+          Object.keys(c.research_commissions).sort().reverse().forEach(yr => {
+            html += `<div class="cost-row"><span class="cost-label" style="padding-left:12px">${yr} (research)</span><span class="cost-val" style="color:var(--yellow)">$${formatNumber(c.research_commissions[yr])}</span></div>`;
+          });
+        }
+      });
+      html += '</div>';
+    }
+
+    if (data.turnover && data.turnover.length > 0) {
+      html += `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px 20px;margin-bottom:12px">
+        <div style="font-weight:600;font-size:13px;color:var(--accent);margin-bottom:10px">Historical Portfolio Turnover</div>`;
+      data.turnover.forEach(t => {
+        if (t.fund_name) html += `<div style="font-weight:500;font-size:12px;color:var(--text);margin-top:8px;margin-bottom:4px">${t.fund_name}</div>`;
+        Object.keys(t.annual_turnover).sort().reverse().forEach(yr => {
+          html += `<div class="cost-row"><span class="cost-label">${yr}</span><span class="cost-val">${t.annual_turnover[yr]}%</span></div>`;
+        });
+      });
+      html += '</div>';
+    }
+
+    content.innerHTML = html || '<div style="color:var(--text-dim);font-size:13px;padding:8px 0">No N-CSR data available.</div>';
+  } catch (e) { /* N-CSR is supplementary */ }
+}
+
+async function fetchFeeHistory(ticker) {
+  const section = document.getElementById('feeHistorySection');
+  const content = document.getElementById('feeHistoryContent');
+  section.style.display = 'none';
+
+  try {
+    const resp = await fetch(`/api/fee-history/${ticker}`);
+    if (!resp.ok) return;
+    const data = await resp.json();
+    if (!data.snapshots || data.snapshots.length === 0) return;
+
+    // ── X-Ray verdict chip ──
+    if (data.has_changes && data.changes.length > 0) {
+      const net = data.net_change_bps;
+      if (net > 0) {
+        addFinding('🔺', 'Fees:', `Quietly raised +${net.toFixed(1)} bps`, 'red');
+      } else {
+        addFinding('🔻', 'Fees:', `Lowered ${net.toFixed(1)} bps`, 'green');
+      }
+    } else if (data.snapshots.length >= 2) {
+      addFinding('✓', 'Fees:', `Stable across ${data.snapshots.length} filings`, 'green');
+    }
+
+    // ── Deep Dive detail ──
+    section.style.display = 'block';
+    let html = '';
+
+    if (data.has_changes && data.changes.length > 0) {
+      html += `<div style="font-weight:600;font-size:13px;color:var(--red);margin-bottom:10px">Fee Changes Detected</div>`;
+      data.changes.forEach(c => {
+        const arrow = c.direction === 'increase' ? '↑' : '↓';
+        const color = c.direction === 'increase' ? 'var(--red)' : 'var(--green)';
+        const sign = c.change_bps > 0 ? '+' : '';
+        html += `<div class="cost-row">
+          <span class="cost-label">${c.field_label}</span>
+          <span class="cost-val" style="color:${color}">${arrow} ${sign}${c.change_bps.toFixed(1)} bps</span>
+        </div>
+        <div style="font-size:11px;color:var(--text-dim);padding:0 0 6px 0">${c.old_value.toFixed(3)}% → ${c.new_value.toFixed(3)}% (${c.old_filing_date} → ${c.new_filing_date})</div>`;
+      });
+      html += `<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);font-weight:600;font-size:13px">
+        Net change: <span style="color:${data.net_change_bps > 0 ? 'var(--red)' : 'var(--green)'}">${data.net_change_bps > 0 ? '+' : ''}${data.net_change_bps.toFixed(1)} bps</span>
+      </div>`;
+    } else {
+      html += `<div style="color:var(--green);font-size:13px">✓ No fee changes detected across ${data.snapshots.length} recent filings.</div>`;
+    }
+
+    html += `<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
+      <div style="font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">Filing Timeline</div>`;
+    data.snapshots.forEach(s => {
+      const er = s.effective_expense_ratio;
+      html += `<div class="cost-row">
+        <span class="cost-label">${s.filing_date} <span style="color:var(--text-dim)">(${s.form_type})</span></span>
+        <span class="cost-val">${er ? er.toFixed(3) + '%' : 'N/A'}</span>
+      </div>`;
+    });
+    html += '</div>';
+
+    content.innerHTML = html;
+  } catch (e) { /* Fee history is supplementary */ }
 }
 
 function formatNumber(n) {

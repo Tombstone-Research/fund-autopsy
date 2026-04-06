@@ -18,12 +18,16 @@ console = Console()
 
 
 class DetailLevel(str, Enum):
+    """Output detail level for fund analysis results."""
+
     retail = "retail"
     advisor = "advisor"
     researcher = "researcher"
 
 
 class ExportFormat(str, Enum):
+    """Supported export formats for analysis results."""
+
     json = "json"
     csv = "csv"
     html = "html"

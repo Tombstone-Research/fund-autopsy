@@ -6,7 +6,7 @@ from typing import Optional
 
 from fundautopsy.models.fund_metadata import FundMetadata
 from fundautopsy.models.filing_data import NPortData
-from fundautopsy.models.holdings_tree import FundNode, MAX_RECURSION_DEPTH
+from fundautopsy.models.holdings_tree import FundNode
 from fundautopsy.data.edgar import MutualFundIdentifier
 from fundautopsy.data.ncen import retrieve_ncen
 from fundautopsy.data.nport import retrieve_nport, detect_fund_holdings

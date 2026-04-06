@@ -25,4 +25,5 @@ class FundMetadata:
 
     @property
     def ticker_upper(self) -> str:
+        """Uppercase version of ticker symbol."""
         return self.ticker.upper()

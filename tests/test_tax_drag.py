@@ -5,10 +5,11 @@ import pytest
 from fundautopsy.estimates.tax_drag import (
     estimate_tax_drag,
     tax_drag_comparison_text,
-    ORDINARY_INCOME_RATE,
-    LTCG_RATE,
-    QUALIFIED_DIVIDEND_RATE,
+    FEDERAL_ORDINARY_INCOME_RATE,
+    FEDERAL_LTCG_RATE,
+    FEDERAL_QUALIFIED_DIVIDEND_RATE,
     STATE_TAX_ESTIMATE,
+    NIIT_RATE,
 )
 
 
@@ -114,9 +115,9 @@ class TestTaxDragEstimation:
             dividend_yield_pct=2.5,
             is_equity=True,
         )
-        # Reasonable range for active equity fund
+        # Reasonable range for active equity fund (with higher accurate tax rates)
         assert result.estimated_tax_drag_low_bps > 0
-        assert result.estimated_tax_drag_high_bps <= 300.0
+        assert result.estimated_tax_drag_high_bps <= 400.0  # Updated for higher accurate rates
 
     def test_methodology_populated(self):
         """Result should include methodology."""
@@ -287,3 +288,111 @@ class TestTaxDragComparisonText:
 
         # Should mention STCG share
         assert "STCG share" in text or "share" in text
+
+
+class TestTaxDragWithNIIT:
+    """Test tax drag with Net Investment Income Tax."""
+
+    def test_niit_increases_tax_drag(self):
+        """Funds with NIIT should have higher tax drag than without."""
+        without_niit = estimate_tax_drag(
+            turnover_rate_pct=100.0,
+            dividend_yield_pct=2.0,
+            is_equity=True,
+            include_niit=False,
+        )
+        with_niit = estimate_tax_drag(
+            turnover_rate_pct=100.0,
+            dividend_yield_pct=2.0,
+            is_equity=True,
+            include_niit=True,
+        )
+        # NIIT should increase total tax drag
+        assert with_niit.estimated_tax_drag_high_bps > without_niit.estimated_tax_drag_high_bps
+
+    def test_niit_methodology_noted(self):
+        """Methodology should mention NIIT when included."""
+        with_niit = estimate_tax_drag(
+            turnover_rate_pct=50.0,
+            is_equity=True,
+            include_niit=True,
+        )
+        # Should mention NIIT in methodology
+        assert "NIIT" in with_niit.methodology
+
+    def test_without_niit_omits_from_methodology(self):
+        """Methodology should not mention NIIT when excluded."""
+        without_niit = estimate_tax_drag(
+            turnover_rate_pct=50.0,
+            is_equity=True,
+            include_niit=False,
+        )
+        # Should not mention NIIT
+        assert "NIIT" not in without_niit.methodology
+
+
+class TestTaxDragCostRangeIntegration:
+    """Test integration with CostRange model."""
+
+    def test_as_cost_range_conversion(self):
+        """TaxDragEstimate should convert to CostRange."""
+        estimate = estimate_tax_drag(
+            turnover_rate_pct=75.0,
+            dividend_yield_pct=2.0,
+            is_equity=True,
+        )
+        cost_range = estimate.as_cost_range()
+
+        # Should have matching values
+        assert cost_range.low_bps == estimate.estimated_tax_drag_low_bps
+        assert cost_range.high_bps == estimate.estimated_tax_drag_high_bps
+        # Should be tagged as estimated
+        from fundautopsy.models.filing_data import DataSourceTag
+        assert cost_range.tag == DataSourceTag.ESTIMATED
+        # Should have methodology
+        assert cost_range.methodology == estimate.methodology
+
+    def test_cost_range_midpoint(self):
+        """CostRange should provide useful midpoint."""
+        estimate = estimate_tax_drag(
+            turnover_rate_pct=60.0,
+            dividend_yield_pct=2.0,
+            is_equity=True,
+        )
+        cost_range = estimate.as_cost_range()
+        # Midpoint should be average of low and high
+        expected_midpoint = (estimate.estimated_tax_drag_low_bps + estimate.estimated_tax_drag_high_bps) / 2
+        assert cost_range.midpoint_bps == expected_midpoint
+
+
+class TestTaxDragFundTypeTracking:
+    """Test that fund type is properly tracked."""
+
+    def test_equity_fund_type_stored(self):
+        """Equity fund should store type."""
+        result = estimate_tax_drag(
+            turnover_rate_pct=50.0,
+            is_equity=True,
+        )
+        assert result.fund_type == "equity"
+
+    def test_bond_fund_type_stored(self):
+        """Bond fund should store type."""
+        result = estimate_tax_drag(
+            turnover_rate_pct=50.0,
+            is_equity=False,
+        )
+        assert result.fund_type == "bond"
+
+    def test_fund_type_in_methodology(self):
+        """Methodology should mention fund type."""
+        equity = estimate_tax_drag(
+            turnover_rate_pct=50.0,
+            is_equity=True,
+        )
+        bond = estimate_tax_drag(
+            turnover_rate_pct=50.0,
+            is_equity=False,
+        )
+        assert "equity" in equity.methodology.lower()
+        assert "bond" in bond.methodology.lower()

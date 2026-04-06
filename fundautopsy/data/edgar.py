@@ -31,6 +31,7 @@ class MutualFundIdentifier:
     cik_padded: str = ""
 
     def __post_init__(self) -> None:
+        """Pad CIK to 10 digits for EDGAR URL construction."""
         self.cik_padded = str(self.cik).zfill(10)
 
 

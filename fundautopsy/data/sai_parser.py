@@ -83,6 +83,7 @@ class ParsedSAI:
 
     @property
     def has_data(self) -> bool:
+        """True if any commission or compensation data was parsed."""
         return bool(self.commissions) or self.pm_compensation is not None
 
 
@@ -159,9 +160,6 @@ def _find_485bpos_filing(cik: int, max_filings: int = 5) -> Optional[dict]:
                 "primary_doc": primary_docs[i] if i < len(primary_docs) else "",
                 "cik": cik,
             }
-            max_filings -= 1
-            if max_filings <= 0:
-                break
     return None
 
 

@@ -19,14 +19,17 @@ class CostRange:
 
     @property
     def midpoint_bps(self) -> float:
+        """Midpoint of the cost range in basis points."""
         return (self.low_bps + self.high_bps) / 2
 
     @property
     def low_pct(self) -> float:
+        """Low end of cost range as a percentage."""
         return self.low_bps / 100
 
     @property
     def high_pct(self) -> float:
+        """High end of cost range as a percentage."""
         return self.high_bps / 100
 
 
