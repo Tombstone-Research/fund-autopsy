@@ -78,7 +78,34 @@ NPORT_ASSET_CAT_MAP: dict[str, str] = {
     "DBT": "DBT_IG",  # Debt (default to IG, refine with credit quality)
     "STIV": "EC",  # Short-term investment vehicle
     "OTHER": "EC",  # Other — conservative default
+    # ABS / MBS categories
+    "ABS-MBS": "DBT_IG",  # Agency MBS — tight spreads, IG-like
+    "ABS-O": "DBT_IG",  # Other ABS
+    "ABS-CBDO": "DBT_HY",  # CLO/CDO tranches — wider spreads
+    "ABS-A": "DBT_IG",  # Auto ABS
+    # Derivatives and cash
+    "DIR": "DBT_GOV",  # Derivatives — use govt as proxy (low friction)
+    "LOAN": "DBT_HY",  # Loans — illiquid, HY-like spreads
+    "CASH": "DBT_GOV",  # Cash equivalents
 }
 
 # Turnover threshold for low vs high classification
-TURNOVER_LOW_HIGH_THRESHOLD = 0.50  # 50%
+TURNOVER_LOW_HIGH_THRESHOLD = 0.50  # 50% for equity funds
+
+# Bond funds use a higher turnover threshold — 100% is normal for
+# active fixed income due to roll-down, coupon reinvestment, and duration mgmt
+BOND_TURNOVER_LOW_HIGH_THRESHOLD = 1.00  # 100%
+
+# Bond fund market impact is structurally lower than equity impact.
+# Fixed income markets are dealer-intermediated with narrower price impact
+# per unit of turnover. These are separate from the equity impact assumptions.
+BOND_IMPACT_ASSUMPTIONS: dict[str, ImpactAssumption] = {
+    "bond_low_turnover": ImpactAssumption(
+        "Bond fund, low turnover (<100%)", 0.0005, 0.0010,
+        "IG-heavy bond funds with normal turnover"
+    ),
+    "bond_high_turnover": ImpactAssumption(
+        "Bond fund, high turnover (>100%)", 0.0010, 0.0025,
+        "Active bond funds, PIMCO-style high-turnover strategies"
+    ),
+}

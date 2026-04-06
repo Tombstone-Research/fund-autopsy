@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import traceback
 from datetime import date
+from typing import Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -27,17 +28,17 @@ app.add_middleware(
 
 class CostComponent(BaseModel):
     label: str
-    value: str | None
-    low: float | None = None
-    high: float | None = None
+    value: Optional[str]
+    low: Optional[float] = None
+    high: Optional[float] = None
     tag: str
-    note: str | None = None
+    note: Optional[str] = None
 
 
 class FeeComponent(BaseModel):
     label: str
-    pct: float | None
-    bps: float | None
+    pct: Optional[float]
+    bps: Optional[float]
 
 
 class AssetMix(BaseModel):
@@ -55,18 +56,18 @@ class BrokerInfo(BaseModel):
 
 class SecuritiesLendingInfo(BaseModel):
     is_lending: bool
-    agent_name: str | None = None
+    agent_name: Optional[str] = None
     is_agent_affiliated: bool = False
-    net_income: float | None = None
-    avg_value_on_loan: float | None = None
+    net_income: Optional[float] = None
+    avg_value_on_loan: Optional[float] = None
 
 
 class ServiceProviders(BaseModel):
-    adviser: str | None = None
-    administrator: str | None = None
-    custodian: str | None = None
-    transfer_agent: str | None = None
-    auditor: str | None = None
+    adviser: Optional[str] = None
+    administrator: Optional[str] = None
+    custodian: Optional[str] = None
+    transfer_agent: Optional[str] = None
+    auditor: Optional[str] = None
     is_admin_affiliated: bool = False
     is_transfer_agent_affiliated: bool = False
 
@@ -75,58 +76,58 @@ class DollarImpact(BaseModel):
     investment: float
     horizon_years: int
     assumed_return_pct: float
-    expense_ratio_only_cost: float | None
-    true_cost_low: float | None
-    true_cost_high: float | None
-    hidden_cost_low: float | None
-    hidden_cost_high: float | None
-    final_value_er_only: float | None
-    final_value_true_low: float | None
-    final_value_true_high: float | None
+    expense_ratio_only_cost: Optional[float]
+    true_cost_low: Optional[float]
+    true_cost_high: Optional[float]
+    hidden_cost_low: Optional[float]
+    hidden_cost_high: Optional[float]
+    final_value_er_only: Optional[float]
+    final_value_true_low: Optional[float]
+    final_value_true_high: Optional[float]
 
 
 class FundAnalysis(BaseModel):
     ticker: str
     name: str
     family: str
-    share_class: str | None = None
-    net_assets: float | None
+    share_class: Optional[str] = None
+    net_assets: Optional[float]
     net_assets_display: str
     holdings_count: int
-    period_end: str | None
+    period_end: Optional[str]
     is_fund_of_funds: bool
 
     # Expense ratio from prospectus
-    expense_ratio_pct: float | None = None
-    expense_ratio_bps: float | None = None
-    fee_breakdown: list[FeeComponent] = []
-    portfolio_turnover: float | None = None
-    max_sales_load: float | None = None
+    expense_ratio_pct: Optional[float] = None
+    expense_ratio_bps: Optional[float] = None
+    fee_breakdown: List[FeeComponent] = []
+    portfolio_turnover: Optional[float] = None
+    max_sales_load: Optional[float] = None
 
     # Hidden costs
-    costs: list[CostComponent]
-    total_hidden_low: float | None
-    total_hidden_high: float | None
+    costs: List[CostComponent]
+    total_hidden_low: Optional[float]
+    total_hidden_high: Optional[float]
 
     # True total cost = ER + hidden
-    true_cost_low_bps: float | None = None
-    true_cost_high_bps: float | None = None
-    true_cost_low_pct: float | None = None
-    true_cost_high_pct: float | None = None
+    true_cost_low_bps: Optional[float] = None
+    true_cost_high_bps: Optional[float] = None
+    true_cost_low_pct: Optional[float] = None
+    true_cost_high_pct: Optional[float] = None
 
     # Dollar impact
-    dollar_impact: DollarImpact | None = None
+    dollar_impact: Optional[DollarImpact] = None
 
     # N-CEN supplementary data
-    top_brokers: list[BrokerInfo] = []
-    affiliated_brokers: list[BrokerInfo] = []
-    securities_lending: SecuritiesLendingInfo | None = None
-    service_providers: ServiceProviders | None = None
-    aggregate_commission_dollars: float | None = None
+    top_brokers: List[BrokerInfo] = []
+    affiliated_brokers: List[BrokerInfo] = []
+    securities_lending: Optional[SecuritiesLendingInfo] = None
+    service_providers: Optional[ServiceProviders] = None
+    aggregate_commission_dollars: Optional[float] = None
 
-    asset_mix: list[AssetMix]
-    conflict_flags: list[str] = []
-    data_notes: list[str]
+    asset_mix: List[AssetMix]
+    conflict_flags: List[str] = []
+    data_notes: List[str]
     generated: str
 
 
@@ -150,9 +151,9 @@ def _fmt_dollars(amount: float) -> str:
 
 
 def _compute_dollar_impact(
-    expense_ratio_pct: float | None,
-    hidden_low_bps: float | None,
-    hidden_high_bps: float | None,
+    expense_ratio_pct: Optional[float],
+    hidden_low_bps: Optional[float],
+    hidden_high_bps: Optional[float],
     investment: float = 100_000,
     horizon: int = 20,
     annual_return: float = 7.0,
@@ -480,7 +481,7 @@ def analyze_fund(ticker: str):
 
 class SAICommission(BaseModel):
     fund_name: str
-    annual_commissions: dict[int, float]
+    annual_commissions: Dict[int, float]
 
 
 class SAIPMCompensation(BaseModel):
@@ -505,10 +506,10 @@ class SAIAnalysis(BaseModel):
     cik: int
     filing_date: str
     accession_no: str
-    commissions: list[SAICommission]
-    pm_compensation: SAIPMCompensation | None
-    soft_dollar_info: SAISoftDollar | None
-    conflict_flags: list[str]
+    commissions: List[SAICommission]
+    pm_compensation: Optional[SAIPMCompensation]
+    soft_dollar_info: Optional[SAISoftDollar]
+    conflict_flags: List[str]
 
 
 @app.get("/api/sai/{ticker}", response_model=SAIAnalysis)
