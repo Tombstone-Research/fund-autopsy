@@ -3,18 +3,18 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 import httpx
 
 # SEC EDGAR endpoints
-EDGAR_SUBMISSIONS_URL = "https://data.sec.gov/submissions"
-EDGAR_ARCHIVES_URL = "https://www.sec.gov/Archives/edgar/data"
-EDGAR_MF_TICKERS_URL = "https://www.sec.gov/files/company_tickers_mf.json"
+EDGAR_SUBMISSIONS_URL: str = "https://data.sec.gov/submissions"
+EDGAR_ARCHIVES_URL: str = "https://www.sec.gov/Archives/edgar/data"
+EDGAR_MF_TICKERS_URL: str = "https://www.sec.gov/files/company_tickers_mf.json"
 
 # Rate limiting: SEC requests max 10 requests/second
-RATE_LIMIT_DELAY = 0.12  # seconds between requests (slightly over 100ms for safety)
+RATE_LIMIT_DELAY: float = 0.12  # seconds between requests (slightly over 100ms for safety)
 
 # Module-level timestamp for rate limiting
 _last_request_time: float = 0.0
@@ -59,8 +59,8 @@ def get_edgar_client() -> httpx.Client:
 def _rate_limit() -> None:
     """Enforce SEC rate limit of 10 requests/second."""
     global _last_request_time
-    now = time.time()
-    elapsed = now - _last_request_time
+    now: float = time.time()
+    elapsed: float = now - _last_request_time
     if elapsed < RATE_LIMIT_DELAY:
         time.sleep(RATE_LIMIT_DELAY - elapsed)
     _last_request_time = time.time()
@@ -79,7 +79,7 @@ def resolve_ticker(ticker: str, client: Optional[httpx.Client] = None) -> Option
     Returns:
         MutualFundIdentifier if found, None otherwise.
     """
-    own_client = client is None
+    own_client: bool = client is None
     if own_client:
         client = get_edgar_client()
 
@@ -87,10 +87,10 @@ def resolve_ticker(ticker: str, client: Optional[httpx.Client] = None) -> Option
         _rate_limit()
         resp = client.get(EDGAR_MF_TICKERS_URL)
         resp.raise_for_status()
-        data = resp.json()
+        data: dict = resp.json()
 
         # Structure: {"fields": ["cik","seriesId","classId","symbol"], "data": [[...], ...]}
-        ticker_upper = ticker.upper()
+        ticker_upper: str = ticker.upper()
         for row in data["data"]:
             cik, series_id, class_id, symbol = row
             if symbol and symbol.upper() == ticker_upper:
@@ -126,22 +126,22 @@ def get_filings(
     Returns:
         List of FilingEntry sorted by date descending (most recent first).
     """
-    own_client = client is None
+    own_client: bool = client is None
     if own_client:
         client = get_edgar_client()
 
     try:
-        cik_padded = str(cik).zfill(10)
+        cik_padded: str = str(cik).zfill(10)
         _rate_limit()
         resp = client.get(f"{EDGAR_SUBMISSIONS_URL}/CIK{cik_padded}.json")
         resp.raise_for_status()
-        sub = resp.json()
+        sub: dict = resp.json()
 
-        recent = sub.get("filings", {}).get("recent", {})
-        forms = recent.get("form", [])
-        dates = recent.get("filingDate", [])
-        accessions = recent.get("accessionNumber", [])
-        primary_docs = recent.get("primaryDocument", [])
+        recent: dict = sub.get("filings", {}).get("recent", {})
+        forms: list = recent.get("form", [])
+        dates: list = recent.get("filingDate", [])
+        accessions: list = recent.get("accessionNumber", [])
+        primary_docs: list = recent.get("primaryDocument", [])
 
         entries: list[FilingEntry] = []
         for i, form in enumerate(forms):
@@ -179,13 +179,13 @@ def download_filing_xml(
     Raises:
         httpx.HTTPStatusError: If the download fails.
     """
-    own_client = client is None
+    own_client: bool = client is None
     if own_client:
         client = get_edgar_client()
 
     try:
-        accession_path = accession_number.replace("-", "")
-        url = f"{EDGAR_ARCHIVES_URL}/{cik}/{accession_path}/{primary_document}"
+        accession_path: str = accession_number.replace("-", "")
+        url: str = f"{EDGAR_ARCHIVES_URL}/{cik}/{accession_path}/{primary_document}"
         _rate_limit()
         resp = client.get(url)
         resp.raise_for_status()

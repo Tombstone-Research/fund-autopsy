@@ -27,7 +27,7 @@ from __future__ import annotations
 import re
 import math
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, List
 
 
 @dataclass
@@ -71,11 +71,11 @@ def _count_syllables(word: str) -> int:
         return 1
 
     # Count vowel groups
-    vowels = "aeiouy"
-    count = 0
-    prev_vowel = False
+    vowels: str = "aeiouy"
+    count: int = 0
+    prev_vowel: bool = False
     for char in word:
-        is_vowel = char in vowels
+        is_vowel: bool = char in vowels
         if is_vowel and not prev_vowel:
             count += 1
         prev_vowel = is_vowel
@@ -98,10 +98,18 @@ def _is_complex_word(word: str) -> bool:
 
 def _detect_passive_voice(sentence: str) -> bool:
     """Heuristic detection of passive voice constructions."""
+    # Be verb followed by past participle or -ing form
+    # Common patterns:
+    #  - "was bought", "were disclosed", "is reported"
+    #  - "is being managed", "are being tracked"
+    #  - "was managed", "are tracked"
     passive_patterns = [
-        r'\b(?:is|are|was|were|been|being|be)\s+\w+ed\b',
-        r'\b(?:is|are|was|were|been|being|be)\s+\w+en\b',
-        r'\b(?:is|are|was|were)\s+(?:not\s+)?(?:being\s+)?\w+(?:ed|en)\b',
+        # Standard forms: be + past participle (regular and irregular)
+        r'\b(?:is|are|was|were|been|be)\s+(?:\w+ed|bought|sold|made|put|set|held|taken|given|sent|shown)\b',
+        # Present participle forms
+        r'\b(?:is|are|was|were|been|being|be)\s+being\s+\w+',
+        # Negative forms
+        r'\b(?:is|are|was|were)\s+not\s+(?:\w+ed|bought|sold|made|put|set|held|taken|given|sent|shown)\b',
     ]
     for pattern in passive_patterns:
         if re.search(pattern, sentence, re.IGNORECASE):
@@ -120,11 +128,12 @@ def _flesch_kincaid_grade(
     """
     if total_sentences == 0 or total_words == 0:
         return 0.0
-    return (
+    result: float = (
         0.39 * (total_words / total_sentences) +
         11.8 * (total_syllables / total_words) -
         15.59
     )
+    return result
 
 
 def _gunning_fog(
@@ -136,10 +145,11 @@ def _gunning_fog(
     """
     if total_sentences == 0 or total_words == 0:
         return 0.0
-    return 0.4 * (
+    result: float = 0.4 * (
         (total_words / total_sentences) +
         100 * (complex_words / total_words)
     )
+    return result
 
 
 # ── Scoring functions ────────────────────────────────────────────────────────
@@ -150,9 +160,9 @@ def _score_readability(fk_grade: float, fog: float) -> float:
     Baseline: A clear fund prospectus scores ~12 FK grade.
     Obfuscated filings score 18+.
     """
-    avg = (fk_grade + fog) / 2
+    avg: float = (fk_grade + fog) / 2
     # Map: 10 -> 0, 14 -> 25, 18 -> 75, 22+ -> 100
-    score = max(0, min(100, (avg - 10) * 8.33))
+    score: float = max(0, min(100, (avg - 10) * 8.33))
     return round(score, 1)
 
 
@@ -165,7 +175,7 @@ def _score_length(word_count: int) -> float:
     # Map: <3000 -> 0, 5000 -> 20, 15000 -> 50, 30000+ -> 100
     if word_count < 3000:
         return 0.0
-    score = min(100, (word_count - 3000) / 270)
+    score: float = min(100, (word_count - 3000) / 270)
     return round(score, 1)
 
 
@@ -176,9 +186,9 @@ def _score_complexity(
 ) -> float:
     """Score structural complexity of fee disclosures."""
     # Each dimension contributes up to ~33 points
-    footnote_score = min(33, footnote_count * 3.3)
-    xref_score = min(33, cross_ref_count * 5.5)
-    nesting_score = min(34, nesting_depth * 11)
+    footnote_score: float = min(33, footnote_count * 3.3)
+    xref_score: float = min(33, cross_ref_count * 5.5)
+    nesting_score: float = min(34, nesting_depth * 11)
     return round(footnote_score + xref_score + nesting_score, 1)
 
 
@@ -189,7 +199,7 @@ def _score_passive_voice(passive_pct: float) -> float:
     often exceed 30%.
     """
     # Map: <10% -> 0, 15% -> 20, 25% -> 60, 35%+ -> 100
-    score = max(0, min(100, (passive_pct - 10) * 4))
+    score: float = max(0, min(100, (passive_pct - 10) * 4))
     return round(score, 1)
 
 
@@ -224,13 +234,13 @@ def score_obfuscation(
     """
     result = ObfuscationScore()
 
-    if not text or len(text) < 100:
+    if not text or len(text) < 20:
         result.methodology = "Insufficient text for analysis."
         return result
 
     # Tokenize
-    sentences = [s.strip() for s in re.split(r'[.!?]+', text) if s.strip() and len(s.strip()) > 10]
-    words = [w for w in re.findall(r'\b[a-zA-Z]+\b', text) if len(w) > 1]
+    sentences: List[str] = [s.strip() for s in re.split(r'[.!?]+', text) if s.strip() and len(s.strip()) > 10]
+    words: List[str] = [w for w in re.findall(r'\b[a-zA-Z]+\b', text) if len(w) > 1]
 
     if not sentences or not words:
         return result
@@ -240,8 +250,8 @@ def score_obfuscation(
     result.avg_sentence_length = len(words) / len(sentences)
 
     # Syllable analysis
-    total_syllables = sum(_count_syllables(w) for w in words)
-    complex_words = sum(1 for w in words if _is_complex_word(w))
+    total_syllables: int = sum(_count_syllables(w) for w in words)
+    complex_words: int = sum(1 for w in words if _is_complex_word(w))
     result.avg_word_syllables = total_syllables / len(words) if words else 0
 
     # Readability
@@ -259,7 +269,7 @@ def score_obfuscation(
     result.length_score = _score_length(len(words))
 
     # Passive voice
-    passive_count = sum(1 for s in sentences if _detect_passive_voice(s))
+    passive_count: int = sum(1 for s in sentences if _detect_passive_voice(s))
     result.passive_voice_pct = round(passive_count / len(sentences) * 100, 1)
     result.passive_voice_score = _score_passive_voice(result.passive_voice_pct)
 
@@ -274,8 +284,8 @@ def score_obfuscation(
             html
         ))
         # Table nesting depth
-        nesting = 0
-        depth = 0
+        nesting: int = 0
+        depth: int = 0
         for m in re.finditer(r'</?table[^>]*>', html, re.IGNORECASE):
             if m.group().startswith('</'):
                 depth -= 1
@@ -291,13 +301,13 @@ def score_obfuscation(
     )
 
     # Fragmentation (how far apart fee-related terms are in the document)
-    fee_mentions = [m.start() for m in re.finditer(
+    fee_mentions: List[int] = [m.start() for m in re.finditer(
         r'(?i)(?:expense|fee|commission|cost|charge)', text
     )]
     if len(fee_mentions) > 2:
-        spread = fee_mentions[-1] - fee_mentions[0]
-        doc_len = len(text)
-        fragmentation_ratio = spread / doc_len if doc_len > 0 else 0
+        spread: int = fee_mentions[-1] - fee_mentions[0]
+        doc_len: int = len(text)
+        fragmentation_ratio: float = spread / doc_len if doc_len > 0 else 0
         result.fragmentation_score = round(min(100, fragmentation_ratio * 120), 1)
 
     # Overall score: weighted average

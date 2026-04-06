@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from fundautopsy.models.fund_metadata import FundMetadata
-from fundautopsy.data.edgar import resolve_ticker, get_edgar_client
+from fundautopsy.data.edgar import resolve_ticker, get_edgar_client, MutualFundIdentifier
 
 
 def identify_fund(ticker: str) -> FundMetadata:
@@ -23,7 +23,7 @@ def identify_fund(ticker: str) -> FundMetadata:
     """
     client = get_edgar_client()
     try:
-        fund_id = resolve_ticker(ticker, client=client)
+        fund_id: MutualFundIdentifier | None = resolve_ticker(ticker, client=client)
         if fund_id is None:
             raise ValueError(
                 f"Could not resolve '{ticker}' to a registered mutual fund. "
@@ -37,7 +37,7 @@ def identify_fund(ticker: str) -> FundMetadata:
         resp.raise_for_status()
         sub = resp.json()
 
-        fund_name = sub.get("name", ticker.upper())
+        fund_name: str = sub.get("name", ticker.upper())
         # The submissions name is the trust/registrant name, not the series name.
         # We'll refine once N-CEN is parsed, but this is fine for now.
 

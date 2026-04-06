@@ -67,6 +67,9 @@ ISSUES_FOR_TWITTER_SCRUTINY.md
 # Content directory (internal strategy, design, drafts)
 content/
 
+# Stale root-level web/ directory (real web code is in fundautopsy/web/)
+web/
+
 # Local data and generated artifacts
 data/
 .coverage*

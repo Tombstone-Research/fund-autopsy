@@ -8,7 +8,6 @@ here for when CUSIP-to-CIK resolution is implemented.
 from __future__ import annotations
 
 from fundautopsy.models.holdings_tree import FundNode
-from fundautopsy.models.cost_breakdown import CostBreakdown
 
 
 def rollup_costs(tree: FundNode) -> FundNode:

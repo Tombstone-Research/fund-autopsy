@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Dict
+
 from fundautopsy.models.cost_breakdown import CostRange
 from fundautopsy.models.filing_data import DataSourceTag, NPortData
 from fundautopsy.estimates.assumptions import (
@@ -29,11 +31,11 @@ def estimate_bid_ask_spread(
     Returns:
         CostRange with low and high estimates in basis points.
     """
-    weights = nport.asset_class_weights()
+    weights: Dict[str, float] = nport.asset_class_weights()
 
-    weighted_low = 0.0
-    weighted_high = 0.0
-    total_weight = 0.0
+    weighted_low: float = 0.0
+    weighted_high: float = 0.0
+    total_weight: float = 0.0
 
     for asset_cat, weight_pct in weights.items():
         # Map N-PORT category to our assumption key

@@ -1,4 +1,16 @@
-"""Supplementary data sources: Yahoo Finance, Morningstar fallbacks."""
+"""Supplementary data sources: Yahoo Finance, Morningstar fallbacks.
+
+NOT YET IMPLEMENTED.
+
+This module provides fallback metadata sources when SEC filings don't contain
+enough detail. Planned functionality:
+
+  - Yahoo Finance ticker lookup for basic fund metadata (AUM, NAV, category)
+  - Morningstar fund category resolution for asset class disambiguation
+  - Historical pricing for NAV-based spread estimation
+
+These are lower-priority integrations — core analysis works with SEC data alone.
+"""
 
 from __future__ import annotations
 
@@ -10,24 +22,41 @@ from fundautopsy.models.fund_metadata import FundMetadata
 def get_fund_metadata_yahoo(ticker: str) -> Optional[dict]:
     """Retrieve basic fund metadata from Yahoo Finance.
 
-    Fallback source for: expense ratio, turnover, fund category,
-    total net assets, NAV, inception date.
+    PLANNED: Fallback source for expense ratio, turnover, fund category,
+    total net assets, NAV, and inception date when SEC filings are sparse.
 
     Args:
         ticker: Fund ticker symbol.
 
     Returns:
         Dict of metadata fields, or None if unavailable.
+
+    Raises:
+        NotImplementedError: This feature is not yet implemented.
     """
-    # TODO: Implement Yahoo Finance lookup
-    raise NotImplementedError
+    raise NotImplementedError(
+        "Yahoo Finance metadata lookup not yet implemented. "
+        "Currently uses SEC EDGAR data only."
+    )
 
 
 def get_fund_category(ticker: str) -> Optional[str]:
     """Resolve fund category (e.g., Large Blend, Target Date 2040).
 
-    Used for context in output and as input to spread estimation
-    when N-PORT asset class data is insufficient.
+    PLANNED: Used for context in output and as input to spread estimation
+    when N-PORT asset class data is insufficient. Will pull from Morningstar
+    or other classification schemes.
+
+    Args:
+        ticker: Fund ticker symbol.
+
+    Returns:
+        Fund category string, or None if unavailable.
+
+    Raises:
+        NotImplementedError: This feature is not yet implemented.
     """
-    # TODO: Implement category lookup
-    raise NotImplementedError
+    raise NotImplementedError(
+        "Fund category lookup not yet implemented. "
+        "Asset class is inferred from N-PORT holdings instead."
+    )

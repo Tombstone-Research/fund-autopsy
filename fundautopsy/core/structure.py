@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Optional
 
 from fundautopsy.models.fund_metadata import FundMetadata
+from fundautopsy.models.filing_data import NPortData
 from fundautopsy.models.holdings_tree import FundNode, MAX_RECURSION_DEPTH
 from fundautopsy.data.edgar import MutualFundIdentifier
 from fundautopsy.data.ncen import retrieve_ncen
@@ -26,14 +27,14 @@ def detect_structure(fund: FundMetadata, depth: int = 0) -> FundNode:
     Returns:
         Root FundNode with filing data populated.
     """
-    fund_id = MutualFundIdentifier(
+    fund_id: MutualFundIdentifier = MutualFundIdentifier(
         ticker=fund.ticker,
         cik=int(fund.cik),
         series_id=fund.series_id,
         class_id=fund.class_id,
     )
 
-    node = FundNode(
+    node: FundNode = FundNode(
         metadata=fund,
         allocation_weight=1.0,
         depth=depth,
@@ -57,7 +58,7 @@ def detect_structure(fund: FundMetadata, depth: int = 0) -> FundNode:
         node.data_notes.append("N-CEN filing not found — brokerage commission data unavailable")
 
     # Retrieve N-PORT
-    nport = retrieve_nport(fund_id)
+    nport: Optional[NPortData] = retrieve_nport(fund_id)
     if nport is not None:
         node.nport_data = nport
         node.nport_available = True
@@ -69,7 +70,7 @@ def detect_structure(fund: FundMetadata, depth: int = 0) -> FundNode:
         # Detect fund-of-funds structure
         fund_holdings = detect_fund_holdings(nport)
         if fund_holdings:
-            total_fund_pct = sum(h.pct_of_net_assets or 0 for h in fund_holdings)
+            total_fund_pct: float = sum(h.pct_of_net_assets or 0 for h in fund_holdings)
             # Only classify as true fund-of-funds if underlying funds are >25% of assets
             # Cash sweep vehicles (money market funds) don't make a fund a FoF
             if total_fund_pct > 25.0:

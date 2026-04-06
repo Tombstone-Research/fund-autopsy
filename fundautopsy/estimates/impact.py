@@ -100,13 +100,13 @@ def estimate_market_impact_regression(
         CostRange with low/high estimates in basis points.
     """
     # Normalize to fractions
-    bond_weight = min(pct_bond, 100.0) / 100.0
-    equity_weight = 1.0 - bond_weight
-    small_cap_weight = min(pct_small_cap, 100.0) / 100.0
+    bond_weight: float = min(pct_bond, 100.0) / 100.0
+    equity_weight: float = 1.0 - bond_weight
+    small_cap_weight: float = min(pct_small_cap, 100.0) / 100.0
 
     # Equity component: blend small/large cap assumptions
-    eq_threshold = TURNOVER_LOW_HIGH_THRESHOLD
-    eq_high = turnover_rate > eq_threshold
+    eq_threshold: float = TURNOVER_LOW_HIGH_THRESHOLD
+    eq_high: bool = turnover_rate > eq_threshold
 
     if eq_high:
         large_a = IMPACT_ASSUMPTIONS["large_high_turnover"]
@@ -115,26 +115,26 @@ def estimate_market_impact_regression(
         large_a = IMPACT_ASSUMPTIONS["large_low_turnover"]
         small_a = IMPACT_ASSUMPTIONS["small_low_turnover"]
 
-    eq_low_pct = (
+    eq_low_pct: float = (
         small_cap_weight * small_a.low_pct_of_turnover
         + (1.0 - small_cap_weight) * large_a.low_pct_of_turnover
     )
-    eq_high_pct = (
+    eq_high_pct: float = (
         small_cap_weight * small_a.high_pct_of_turnover
         + (1.0 - small_cap_weight) * large_a.high_pct_of_turnover
     )
 
     # Bond component
-    bond_threshold = BOND_TURNOVER_LOW_HIGH_THRESHOLD
-    bond_key = "bond_high_turnover" if turnover_rate > bond_threshold else "bond_low_turnover"
+    bond_threshold: float = BOND_TURNOVER_LOW_HIGH_THRESHOLD
+    bond_key: str = "bond_high_turnover" if turnover_rate > bond_threshold else "bond_low_turnover"
     bond_a = BOND_IMPACT_ASSUMPTIONS[bond_key]
 
     # Weighted blend
-    blended_low = equity_weight * eq_low_pct + bond_weight * bond_a.low_pct_of_turnover
-    blended_high = equity_weight * eq_high_pct + bond_weight * bond_a.high_pct_of_turnover
+    blended_low: float = equity_weight * eq_low_pct + bond_weight * bond_a.low_pct_of_turnover
+    blended_high: float = equity_weight * eq_high_pct + bond_weight * bond_a.high_pct_of_turnover
 
-    cost_low = turnover_rate * blended_low * 10_000
-    cost_high = turnover_rate * blended_high * 10_000
+    cost_low: float = turnover_rate * blended_low * 10_000
+    cost_high: float = turnover_rate * blended_high * 10_000
 
     return CostRange(
         low_bps=round(cost_low, 2),

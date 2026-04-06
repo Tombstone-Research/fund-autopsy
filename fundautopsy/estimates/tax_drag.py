@@ -80,8 +80,8 @@ def estimate_tax_drag(
     Returns:
         TaxDragEstimate with component breakdown.
     """
-    result = TaxDragEstimate(turnover_rate_pct=turnover_rate_pct)
-    turnover = turnover_rate_pct / 100.0
+    result: TaxDragEstimate = TaxDragEstimate(turnover_rate_pct=turnover_rate_pct)
+    turnover: float = turnover_rate_pct / 100.0
 
     if is_tax_managed:
         # Tax-managed funds minimize distributions
@@ -95,7 +95,7 @@ def estimate_tax_drag(
     # High turnover -> more short-term (held < 1 year)
     # Academic evidence: funds with >100% turnover generate ~40-60% STCG
     if turnover > 1.0:
-        stcg_share = 0.50
+        stcg_share: float = 0.50
     elif turnover > 0.5:
         stcg_share = 0.35
     elif turnover > 0.2:
@@ -107,42 +107,42 @@ def estimate_tax_drag(
 
     if is_equity:
         # Equity fund: assume ~7% average annual appreciation
-        avg_annual_gain = 0.07
-        realized_gain = turnover * avg_annual_gain
+        avg_annual_gain: float = 0.07
+        realized_gain: float = turnover * avg_annual_gain
 
-        stcg = realized_gain * stcg_share
-        ltcg = realized_gain * (1 - stcg_share)
+        stcg: float = realized_gain * stcg_share
+        ltcg: float = realized_gain * (1 - stcg_share)
 
-        stcg_tax = stcg * (ORDINARY_INCOME_RATE + STATE_TAX_ESTIMATE)
-        ltcg_tax = ltcg * (LTCG_RATE + STATE_TAX_ESTIMATE)
+        stcg_tax: float = stcg * (ORDINARY_INCOME_RATE + STATE_TAX_ESTIMATE)
+        ltcg_tax: float = ltcg * (LTCG_RATE + STATE_TAX_ESTIMATE)
 
         result.stcg_drag_bps = round(stcg_tax * 10000, 1)
         result.ltcg_drag_bps = round(ltcg_tax * 10000, 1)
 
         # Dividend tax
         if dividend_yield_pct > 0:
-            div_yield = dividend_yield_pct / 100.0
+            div_yield: float = dividend_yield_pct / 100.0
             # Assume 70% of equity dividends are qualified
-            qualified_pct = 0.70
-            div_tax = (div_yield * qualified_pct * (QUALIFIED_DIVIDEND_RATE + STATE_TAX_ESTIMATE) +
+            qualified_pct: float = 0.70
+            div_tax: float = (div_yield * qualified_pct * (QUALIFIED_DIVIDEND_RATE + STATE_TAX_ESTIMATE) +
                        div_yield * (1 - qualified_pct) * (ORDINARY_INCOME_RATE + STATE_TAX_ESTIMATE))
             result.dividend_drag_bps = round(div_tax * 10000, 1)
     else:
         # Bond fund: interest taxed at ordinary income rates
-        avg_yield = 0.04  # ~4% for bond funds
-        realized_interest = avg_yield
-        interest_tax = realized_interest * (ORDINARY_INCOME_RATE + STATE_TAX_ESTIMATE)
+        avg_yield: float = 0.04  # ~4% for bond funds
+        realized_interest: float = avg_yield
+        interest_tax: float = realized_interest * (ORDINARY_INCOME_RATE + STATE_TAX_ESTIMATE)
         result.dividend_drag_bps = round(interest_tax * 10000, 1)
 
         # Bond funds also generate gains/losses from trading
-        avg_bond_gain = 0.02
+        avg_bond_gain: float = 0.02
         realized_gain = turnover * avg_bond_gain
         stcg = realized_gain * stcg_share
         ltcg = realized_gain * (1 - stcg_share)
         result.stcg_drag_bps = round(stcg * (ORDINARY_INCOME_RATE + STATE_TAX_ESTIMATE) * 10000, 1)
         result.ltcg_drag_bps = round(ltcg * (LTCG_RATE + STATE_TAX_ESTIMATE) * 10000, 1)
 
-    total = result.stcg_drag_bps + result.ltcg_drag_bps + result.dividend_drag_bps
+    total: float = result.stcg_drag_bps + result.ltcg_drag_bps + result.dividend_drag_bps
     # Low estimate: 70% of calculated (conservative assumptions)
     # High estimate: 130% of calculated (aggressive realization)
     result.estimated_tax_drag_low_bps = round(total * 0.70, 1)
@@ -169,14 +169,14 @@ def tax_drag_comparison_text(
 
     Useful for X thread content and reports.
     """
-    low = tax_drag.estimated_tax_drag_low_bps
-    high = tax_drag.estimated_tax_drag_high_bps
+    low: float = tax_drag.estimated_tax_drag_low_bps
+    high: float = tax_drag.estimated_tax_drag_high_bps
 
-    text = f"{fund_ticker}: Estimated tax drag {low:.0f}–{high:.0f} bps"
+    text: str = f"{fund_ticker}: Estimated tax drag {low:.0f}–{high:.0f} bps"
 
     if expense_ratio_pct is not None:
-        er_bps = expense_ratio_pct * 100
-        midpoint = (low + high) / 2
+        er_bps: float = expense_ratio_pct * 100
+        midpoint: float = (low + high) / 2
         if midpoint > er_bps:
             text += f" (exceeds the {er_bps:.0f} bps expense ratio)"
         elif midpoint > er_bps * 0.5:

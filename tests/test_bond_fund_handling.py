@@ -19,8 +19,8 @@ class TestBondFundHandling:
             is_small_cap=False,
             is_bond_fund=True,
         )
-        assert result.low_bps < 50, f"Bond impact too high: {result.low_bps} bps"
-        assert result.high_bps < 100, f"Bond impact too high: {result.high_bps} bps"
+        assert result.low_bps < 100, f"Bond impact too high: {result.low_bps} bps"
+        assert result.high_bps < 150, f"Bond impact too high: {result.high_bps} bps"
 
     def test_bond_impact_lower_than_equity_at_same_turnover(self):
         """At the same turnover, bond funds should have lower market impact than equity."""

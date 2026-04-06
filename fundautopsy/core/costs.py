@@ -38,7 +38,7 @@ def compute_costs(tree: FundNode) -> FundNode:
 
 def _compute_single_fund_costs(node: FundNode) -> CostBreakdown:
     """Compute costs for a single fund node."""
-    breakdown = CostBreakdown(
+    breakdown: CostBreakdown = CostBreakdown(
         ticker=node.metadata.ticker,
         fund_name=node.metadata.name,
     )
@@ -47,7 +47,7 @@ def _compute_single_fund_costs(node: FundNode) -> CostBreakdown:
     nport = node.nport_data
 
     # Net assets — prefer N-PORT (more recent), fall back to N-CEN
-    net_assets = None
+    net_assets: float | None = None
     if nport and nport.total_net_assets:
         net_assets = nport.total_net_assets
     elif ncen and ncen.total_net_assets and ncen.total_net_assets.is_available:
@@ -57,9 +57,9 @@ def _compute_single_fund_costs(node: FundNode) -> CostBreakdown:
     if ncen is not None:
         # Brokerage commissions in bps
         if ncen.total_brokerage_commissions and ncen.total_brokerage_commissions.is_available:
-            comm_dollars = ncen.total_brokerage_commissions.value
+            comm_dollars: float = ncen.total_brokerage_commissions.value
             if net_assets and net_assets > 0:
-                comm_bps = (comm_dollars / net_assets) * 10_000
+                comm_bps: float = (comm_dollars / net_assets) * 10_000
                 breakdown.brokerage_commissions_bps = TaggedValue(
                     value=round(comm_bps, 2),
                     tag=DataSourceTag.CALCULATED,
@@ -89,9 +89,9 @@ def _compute_single_fund_costs(node: FundNode) -> CostBreakdown:
                 ),
             )
         elif ncen.soft_dollar_commissions and ncen.soft_dollar_commissions.is_available:
-            sd_dollars = ncen.soft_dollar_commissions.value
+            sd_dollars: float = ncen.soft_dollar_commissions.value
             if net_assets and net_assets > 0:
-                sd_bps = (sd_dollars / net_assets) * 10_000
+                sd_bps: float = (sd_dollars / net_assets) * 10_000
                 breakdown.soft_dollar_commissions_bps = TaggedValue(
                     value=round(sd_bps, 2),
                     tag=DataSourceTag.CALCULATED,
@@ -100,8 +100,8 @@ def _compute_single_fund_costs(node: FundNode) -> CostBreakdown:
 
     # --- Turnover rate ---
     # Priority: 497K prospectus > N-CEN > default assumption
-    turnover_rate = DEFAULT_TURNOVER_RATE
-    turnover_source = "default assumption (30%)"
+    turnover_rate: float = DEFAULT_TURNOVER_RATE
+    turnover_source: str = "default assumption (30%)"
 
     if node.prospectus_turnover is not None:
         turnover_rate = node.prospectus_turnover / 100.0
@@ -116,7 +116,7 @@ def _compute_single_fund_costs(node: FundNode) -> CostBreakdown:
         breakdown.bid_ask_spread_cost = estimate_bid_ask_spread(nport, turnover_rate)
 
         # Market impact
-        is_small_cap = _is_small_cap_fund(nport)
+        is_small_cap: bool = _is_small_cap_fund(nport)
         if net_assets:
             breakdown.market_impact_cost = estimate_market_impact(
                 turnover_rate=turnover_rate,
@@ -139,16 +139,18 @@ def _compute_single_fund_costs(node: FundNode) -> CostBreakdown:
     return breakdown
 
 
-def _is_small_cap_fund(nport) -> bool:
+def _is_small_cap_fund(nport: object) -> bool:
     """Heuristic: check if fund is primarily small-cap based on avg holding size."""
-    if not nport.holdings:
+    from fundautopsy.models.filing_data import NPortData
+
+    if not isinstance(nport, NPortData) or not nport.holdings:
         return False
 
     # Check average holding value — small cap funds tend to have smaller positions
-    values = [h.value_usd for h in nport.holdings if h.value_usd and h.value_usd > 0]
+    values: list[float] = [h.value_usd for h in nport.holdings if h.value_usd and h.value_usd > 0]
     if not values:
         return False
 
-    avg_holding = sum(values) / len(values)
+    avg_holding: float = sum(values) / len(values)
     # If average holding is under $200M and fund has many holdings, likely small-cap
     return avg_holding < 200_000_000 and len(values) > 50

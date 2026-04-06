@@ -53,16 +53,20 @@ DEFAULT_SPREAD = SpreadAssumption("Unknown", 0.0010, 0.0025, "Default assumption
 # Market impact assumptions by fund category
 IMPACT_ASSUMPTIONS: dict[str, ImpactAssumption] = {
     "large_low_turnover": ImpactAssumption(
-        "Large-cap, low turnover (<50%)", 0.0010, 0.0020
+        "Large-cap, low turnover (<50%)", 0.0010, 0.0020,
+        "Large-cap funds with moderate trading activity"
     ),
     "large_high_turnover": ImpactAssumption(
-        "Large-cap, high turnover (>50%)", 0.0020, 0.0050
+        "Large-cap, high turnover (>50%)", 0.0020, 0.0050,
+        "Large-cap funds with active trading strategies"
     ),
     "small_low_turnover": ImpactAssumption(
-        "Small-cap, low turnover (<50%)", 0.0030, 0.0060
+        "Small-cap, low turnover (<50%)", 0.0030, 0.0060,
+        "Small-cap funds with moderate trading activity"
     ),
     "small_high_turnover": ImpactAssumption(
-        "Small-cap, high turnover (>50%)", 0.0050, 0.0150
+        "Small-cap, high turnover (>50%)", 0.0050, 0.0150,
+        "Small-cap funds with active trading strategies"
     ),
 }
 

@@ -62,20 +62,36 @@ def estimate_cash_drag(nport: NPortData) -> Optional[CostRange]:
         nport: Parsed N-PORT data with holdings.
 
     Returns:
-        CostRange with drag estimate, or None if no meaningful cash position.
+        CostRange with drag estimate, or None if nport is None.
     """
-    if not nport or not nport.holdings or not nport.total_net_assets:
+    if not nport:
         return None
+
+    if not nport.total_net_assets:
+        return CostRange(
+            low_bps=0.0,
+            high_bps=0.0,
+            tag=DataSourceTag.CALCULATED,
+            methodology="Zero net assets — cannot calculate cash drag.",
+        )
 
     # Sum cash-equivalent holdings
     # N-PORT asset categories: STIV = short-term investment vehicles
     # Also catch holdings with names suggesting cash/MM
-    cash_value = 0.0
+    cash_value: float = 0.0
     for h in nport.holdings:
         if h.asset_category == "STIV":
-            cash_value += abs(h.value_usd or 0)
+            # Use value_usd if available, else calculate from percentage
+            if h.value_usd:
+                cash_value += abs(h.value_usd)
+            elif h.pct_of_net_assets and nport.total_net_assets:
+                cash_value += (h.pct_of_net_assets / 100.0) * nport.total_net_assets
         elif _is_cash_like(h):
-            cash_value += abs(h.value_usd or 0)
+            # Use value_usd if available, else calculate from percentage
+            if h.value_usd:
+                cash_value += abs(h.value_usd)
+            elif h.pct_of_net_assets and nport.total_net_assets:
+                cash_value += (h.pct_of_net_assets / 100.0) * nport.total_net_assets
 
     if cash_value <= 0 or nport.total_net_assets <= 0:
         return CostRange(
@@ -85,8 +101,8 @@ def estimate_cash_drag(nport: NPortData) -> Optional[CostRange]:
             methodology="No cash or STIV holdings detected in N-PORT.",
         )
 
-    cash_pct = (cash_value / nport.total_net_assets) * 100.0
-    excess = max(0.0, cash_pct - OPERATIONAL_CASH_BASELINE_PCT)
+    cash_pct: float = (cash_value / nport.total_net_assets) * 100.0
+    excess: float = max(0.0, cash_pct - OPERATIONAL_CASH_BASELINE_PCT)
 
     if excess <= 0:
         return CostRange(
@@ -100,11 +116,11 @@ def estimate_cash_drag(nport: NPortData) -> Optional[CostRange]:
             ),
         )
 
-    drag_low = round(excess * DRAG_PER_PCT_LOW_BPS, 2)
-    drag_high = round(excess * DRAG_PER_PCT_HIGH_BPS, 2)
-    is_flagged = cash_pct > CASH_FLAG_THRESHOLD_PCT
+    drag_low: float = round(excess * DRAG_PER_PCT_LOW_BPS, 2)
+    drag_high: float = round(excess * DRAG_PER_PCT_HIGH_BPS, 2)
+    is_flagged: bool = cash_pct > CASH_FLAG_THRESHOLD_PCT
 
-    flag_note = ""
+    flag_note: str = ""
     if is_flagged:
         flag_note = (
             f" WARNING: Cash position ({cash_pct:.1f}%) exceeds "
@@ -126,10 +142,15 @@ def estimate_cash_drag(nport: NPortData) -> Optional[CostRange]:
     )
 
 
-def _is_cash_like(holding) -> bool:
+def _is_cash_like(holding: object) -> bool:
     """Heuristic: check if a holding looks like cash/money market."""
-    name = (holding.name or "").upper()
-    cash_keywords = [
+    from fundautopsy.models.filing_data import NPortHolding
+
+    if not isinstance(holding, NPortHolding):
+        return False
+
+    name: str = (holding.name or "").upper()
+    cash_keywords: list[str] = [
         "MONEY MARKET",
         "TREASURY BILL",
         "T-BILL",

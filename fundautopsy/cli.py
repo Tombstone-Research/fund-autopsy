@@ -53,18 +53,20 @@ def analyze(
     from fundautopsy.core.structure import detect_structure
     from fundautopsy.core.costs import compute_costs
     from fundautopsy.core.rollup import rollup_costs
+    from fundautopsy.models.fund_metadata import FundMetadata
+    from fundautopsy.models.holdings_tree import FundNode
 
     with console.status("[bold green]Stage 1: Identifying fund..."):
-        fund = identify_fund(ticker)
+        fund: FundMetadata = identify_fund(ticker)
 
     with console.status("[bold green]Stage 2: Retrieving SEC filings..."):
-        tree = detect_structure(fund)
+        tree: FundNode = detect_structure(fund)
 
     with console.status("[bold green]Stage 3: Computing costs..."):
-        costs = compute_costs(tree)
+        costs: FundNode = compute_costs(tree)
 
     with console.status("[bold green]Stage 4: Rolling up fund-of-funds..."):
-        result = rollup_costs(costs)
+        result: FundNode = rollup_costs(costs)
 
     # Render output
     if detail == DetailLevel.retail:
@@ -118,19 +120,21 @@ def compare(
     )
 
     from fundautopsy.views.comparison import render_comparison
+    from fundautopsy.models.holdings_tree import FundNode
 
-    results = []
+    results: list[FundNode] = []
     for ticker in tickers:
         from fundautopsy.core.fund import identify_fund
         from fundautopsy.core.structure import detect_structure
         from fundautopsy.core.costs import compute_costs
         from fundautopsy.core.rollup import rollup_costs
+        from fundautopsy.models.fund_metadata import FundMetadata
 
         with console.status(f"[bold green]Analyzing {ticker.upper()}..."):
-            fund = identify_fund(ticker)
-            tree = detect_structure(fund)
-            costs = compute_costs(tree)
-            result = rollup_costs(costs)
+            fund: FundMetadata = identify_fund(ticker)
+            tree: FundNode = detect_structure(fund)
+            costs: FundNode = compute_costs(tree)
+            result: FundNode = rollup_costs(costs)
             results.append(result)
 
     render_comparison(results, investment, horizon, assumed_return, console)
