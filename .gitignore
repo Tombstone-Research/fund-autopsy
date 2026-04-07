@@ -68,8 +68,8 @@ ISSUES_FOR_TWITTER_SCRUTINY.md
 content/
 
 # Stale root-level web/ directory (real web code is in fundautopsy/web/)
-web/
+/web/
 
-# Local data and generated artifacts
-data/
+# Local data and generated artifacts (root-level only, not fundautopsy/data/)
+/data/
 .coverage*
