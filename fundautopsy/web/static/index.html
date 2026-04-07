@@ -108,7 +108,12 @@
     <div class="fund-header" style="display:flex;justify-content:space-between;align-items:flex-start">
       <div>
         <div class="fund-title" id="fundTitle"></div>
-        <div class="fund-family" id="fundFamily"></div>
+        <div class="fund-family" id="fundFamily">
+          <span id="edgarStatus" style="display:none;align-items:center;gap:4px;margin-left:10px;font-size:11px;color:#f59e0b;opacity:0.8;cursor:help" title="">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+            SEC data delayed
+          </span>
+        </div>
       </div>
       <div class="share-btn-group" id="shareBtnGroup">
         <button class="share-btn share-btn-x" onclick="shareOnX()" title="Share on X">

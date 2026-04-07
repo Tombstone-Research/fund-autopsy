@@ -612,6 +612,17 @@ function renderDash(d) {
     document.getElementById('notesPanel').style.display = 'none';
   }
 
+  // EDGAR health indicator (subtle)
+  const edgarBadge = document.getElementById('edgarStatus');
+  if (edgarBadge) {
+    if (d.edgar_status === 'degraded') {
+      edgarBadge.style.display = 'inline-flex';
+      edgarBadge.title = 'SEC EDGAR experienced temporary issues during this analysis. Data is complete but retrieval required retries.';
+    } else {
+      edgarBadge.style.display = 'none';
+    }
+  }
+
   // Deep Dive: Conflict Flags
   const flagsContainer = document.getElementById('conflictFlagsContainer');
   const flagsList = document.getElementById('conflictFlagsList');

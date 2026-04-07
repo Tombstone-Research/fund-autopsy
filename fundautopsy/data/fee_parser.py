@@ -14,12 +14,21 @@ by searching through filings to find the one containing the target ticker.
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
 from typing import Optional
 
 from lxml import html as lxml_html
 
+logger = logging.getLogger(__name__)
+
+
+# Fee percentage sanity threshold. Values above this trigger a warning log
+# but are still returned. Set high enough that legitimate high-cost funds
+# (CEFs with leverage, multi-layer FoFs) pass through while catching
+# obvious parse errors like extracting a year (e.g., "2024" → 2024%).
+FEE_SANITY_THRESHOLD_PCT: float = 20.0
 
 # Canonical fee row labels and their field mappings
 _LABEL_MAP = {
@@ -66,6 +75,7 @@ class ParsedFees:
     net_expenses: Optional[float] = None
     max_sales_load: Optional[float] = None
     portfolio_turnover: Optional[float] = None
+    fee_threshold_warning: bool = False  # True if any parsed value exceeded FEE_SANITY_THRESHOLD_PCT
 
     @property
     def has_data(self) -> bool:
@@ -77,15 +87,31 @@ def _extract_pct(text: str) -> Optional[float]:
     """Pull the first percentage value from a cell's text content."""
     text = text.strip()
     if not text or text.lower() in ("none", "n/a", "—", "–", "-"):
-        return 0.0
+        return None
     m = _PCT_PATTERN.search(text)
     if m:
         return float(m.group(1))
     m = _NUM_PATTERN.search(text)
     if m:
         val = float(m.group(1))
-        if val < 20:  # sanity: fee percentages are always < 20%
+        # Values >= 100 are almost certainly years or other non-fee numbers
+        # (no fund charges 100%+ annual fees). Reject them outright.
+        if val >= 100:
+            logger.debug(
+                "Rejecting extracted value %.0f (likely year or non-fee number) from: %r",
+                val, text[:80],
+            )
+            return None
+        if val < FEE_SANITY_THRESHOLD_PCT:
             return val
+        # Value exceeds soft threshold but is plausible (CEFs with leverage,
+        # layered FoFs). Log warning but still return it.
+        logger.warning(
+            "Parsed fee value %.2f%% exceeds %.0f%% sanity threshold — "
+            "verify manually (source text: %r)",
+            val, FEE_SANITY_THRESHOLD_PCT, text[:80],
+        )
+        return val
     return None
 
 
@@ -304,6 +330,7 @@ def find_filing_for_ticker(
             html = filings_497k[i].html()
             if ticker_upper in html:
                 return filings_497k[i]
-        except Exception:
+        except Exception as exc:
+            logger.debug("Error searching 497K filing %d for %s: %s", i, ticker, exc)
             continue
     return None

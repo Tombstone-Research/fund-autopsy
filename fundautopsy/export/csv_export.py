@@ -9,10 +9,9 @@ from __future__ import annotations
 import csv
 import io
 from pathlib import Path
-from typing import Optional
 
-from fundautopsy.models.holdings_tree import FundNode
 from fundautopsy.models.filing_data import DataSourceTag
+from fundautopsy.models.holdings_tree import FundNode
 
 
 def _tag_label(tag: DataSourceTag) -> str:
@@ -136,13 +135,18 @@ def export_csv_string(result: FundNode) -> str:
         ])
 
     # Summary row: total hidden
+    brok_bps = (
+        cb.brokerage_commissions_bps.value
+        if cb and cb.brokerage_commissions_bps and cb.brokerage_commissions_bps.is_available
+        else 0
+    )
     hidden_low = sum(filter(None, [
-        cb.brokerage_commissions_bps.value if cb and cb.brokerage_commissions_bps and cb.brokerage_commissions_bps.is_available else 0,
+        brok_bps,
         cb.bid_ask_spread_cost.low_bps if cb and cb.bid_ask_spread_cost else 0,
         cb.market_impact_cost.low_bps if cb and cb.market_impact_cost else 0,
     ]))
     hidden_high = sum(filter(None, [
-        cb.brokerage_commissions_bps.value if cb and cb.brokerage_commissions_bps and cb.brokerage_commissions_bps.is_available else 0,
+        brok_bps,
         cb.bid_ask_spread_cost.high_bps if cb and cb.bid_ask_spread_cost else 0,
         cb.market_impact_cost.high_bps if cb and cb.market_impact_cost else 0,
     ]))

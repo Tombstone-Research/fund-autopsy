@@ -5,9 +5,11 @@ Run with: python -m fundautopsy.web
 
 from __future__ import annotations
 
-import traceback
+import logging
 from datetime import date
 from typing import Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,7 +17,9 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from fundautopsy.config import CORS_ALLOWED_ORIGINS
 from fundautopsy.models.filing_data import DataSourceTag
+from fundautopsy.data.edgar import reset_edgar_health, get_edgar_health
 from fundautopsy.data.leaderboard import (
     update_leaderboard, get_leaderboard, get_leaderboard_stats,
 )
@@ -26,8 +30,8 @@ app = FastAPI(title="Fund Autopsy", version="0.1.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
+    allow_origins=CORS_ALLOWED_ORIGINS,
+    allow_methods=["GET"],
     allow_headers=["*"],
 )
 
@@ -155,6 +159,7 @@ class FundAnalysis(BaseModel):
     asset_mix: List[AssetMix]
     conflict_flags: List[str] = []
     data_notes: List[str]
+    edgar_status: Optional[str] = None  # "ok" | "degraded" — subtle flakiness indicator
     generated: str
 
 
@@ -181,11 +186,16 @@ def _compute_dollar_impact(
     expense_ratio_pct: Optional[float],
     hidden_low_bps: Optional[float],
     hidden_high_bps: Optional[float],
-    investment: float = 100_000,
-    horizon: int = 20,
-    annual_return: float = 7.0,
+    investment: Optional[float] = None,
+    horizon: Optional[int] = None,
+    annual_return: Optional[float] = None,
 ) -> DollarImpact:
     """Compute dollar cost of fees over time using compound drag."""
+    from fundautopsy.config import DEFAULT_INVESTMENT, DEFAULT_HORIZON_YEARS, DEFAULT_ANNUAL_RETURN_PCT
+
+    investment = investment if investment is not None else DEFAULT_INVESTMENT
+    horizon = horizon if horizon is not None else DEFAULT_HORIZON_YEARS
+    annual_return = annual_return if annual_return is not None else DEFAULT_ANNUAL_RETURN_PCT
     gross_return = annual_return / 100
 
     # ER-only scenario
@@ -197,39 +207,45 @@ def _compute_dollar_impact(
         no_cost_final = investment * ((1 + gross_return) ** horizon)
         er_only_cost = no_cost_final - final_er_only
 
-    # True cost scenarios
-    true_low = None
-    true_high = None
-    hidden_low = None
-    hidden_high = None
-    final_true_low = None
-    final_true_high = None
+    # True cost scenarios (ER + hidden costs combined)
+    # "best case" = lowest drag estimate; "worst case" = highest drag estimate
+    cost_best_case = None
+    cost_worst_case = None
+    hidden_cost_best = None
+    hidden_cost_worst = None
+    final_value_best_case = None
+    final_value_worst_case = None
 
     no_cost_final = investment * ((1 + gross_return) ** horizon)
 
     if expense_ratio_pct is not None and hidden_low_bps is not None:
-        true_drag_low = (expense_ratio_pct + hidden_low_bps / 100) / 100
-        true_drag_high = (expense_ratio_pct + hidden_high_bps / 100) / 100
-        final_true_low = investment * ((1 + gross_return - true_drag_high) ** horizon)
-        final_true_high = investment * ((1 + gross_return - true_drag_low) ** horizon)
-        true_low = no_cost_final - final_true_high
-        true_high = no_cost_final - final_true_low
+        # Convert to decimal drag: pct / 100, bps / 10_000
+        drag_best = expense_ratio_pct / 100 + hidden_low_bps / 10_000
+        drag_worst = expense_ratio_pct / 100 + hidden_high_bps / 10_000
+
+        # Higher drag produces lower final value
+        final_value_worst_case = investment * ((1 + gross_return - drag_worst) ** horizon)
+        final_value_best_case = investment * ((1 + gross_return - drag_best) ** horizon)
+
+        # Dollar cost = what you lose vs. zero-cost scenario
+        cost_best_case = no_cost_final - final_value_best_case
+        cost_worst_case = no_cost_final - final_value_worst_case
         if er_only_cost is not None:
-            hidden_low = true_low - er_only_cost
-            hidden_high = true_high - er_only_cost
+            hidden_cost_best = cost_best_case - er_only_cost
+            hidden_cost_worst = cost_worst_case - er_only_cost
 
     return DollarImpact(
         investment=investment,
         horizon_years=horizon,
         assumed_return_pct=annual_return,
         expense_ratio_only_cost=round(er_only_cost) if er_only_cost else None,
-        true_cost_low=round(true_low) if true_low else None,
-        true_cost_high=round(true_high) if true_high else None,
-        hidden_cost_low=round(hidden_low) if hidden_low else None,
-        hidden_cost_high=round(hidden_high) if hidden_high else None,
+        true_cost_low=round(cost_best_case) if cost_best_case else None,
+        true_cost_high=round(cost_worst_case) if cost_worst_case else None,
+        hidden_cost_low=round(hidden_cost_best) if hidden_cost_best else None,
+        hidden_cost_high=round(hidden_cost_worst) if hidden_cost_worst else None,
         final_value_er_only=round(final_er_only) if final_er_only else None,
-        final_value_true_low=round(final_true_low) if final_true_low else None,
-        final_value_true_high=round(final_true_high) if final_true_high else None,
+        final_value_true_low=round(final_value_best_case) if final_value_best_case else None,
+        final_value_true_high=round(final_value_worst_case) if final_value_worst_case else None,
     )
 
 
@@ -237,8 +253,10 @@ def _compute_dollar_impact(
 def analyze_fund(ticker: str):
     """Run the full Fund Autopsy pipeline on a ticker and return structured results."""
     ticker = ticker.strip().upper()
-    if not ticker.isalpha() or len(ticker) > 6:
+    if not ticker or not ticker.isalpha() or len(ticker) > 6:
         raise HTTPException(400, "Invalid ticker format")
+
+    reset_edgar_health()
 
     try:
         from fundautopsy.core.fund import identify_fund
@@ -258,16 +276,16 @@ def analyze_fund(ticker: str):
             )
             if _prospectus_fees and _prospectus_fees.portfolio_turnover is not None:
                 tree.prospectus_turnover = _prospectus_fees.portfolio_turnover
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Prospectus fetch failed for %s: %s", ticker, exc)
 
         tree = compute_costs(tree)
         tree = rollup_costs(tree)
     except ValueError as e:
         raise HTTPException(404, str(e))
     except Exception as e:
-        traceback.print_exc()
-        raise HTTPException(500, f"Analysis failed: {e}")
+        logger.exception("Analysis failed for %s", ticker)
+        raise HTTPException(500, "Analysis failed due to an internal error")
 
     cb = tree.cost_breakdown
     nport = tree.nport_data
@@ -367,12 +385,12 @@ def analyze_fund(ticker: str):
             ))
 
     # Totals
-    total_hidden_low = sum(
+    total_hidden_low = max(0, sum(
         c.low for c in costs if c.low is not None and c.tag != "warning"
-    )
-    total_hidden_high = sum(
+    ))
+    total_hidden_high = max(0, sum(
         c.high for c in costs if c.high is not None and c.tag != "warning"
-    )
+    ))
 
     # True total cost
     true_cost_low_bps = None
@@ -451,12 +469,18 @@ def analyze_fund(ticker: str):
             conflict_flags.append("Soft dollar arrangements: fund pays inflated commissions for manager's research")
         if ncen_full.affiliated_brokers:
             aff_total = sum(b.gross_commission for b in ncen_full.affiliated_brokers)
-            agg = ncen_full.aggregate_commission or 1
-            aff_pct = (aff_total / agg * 100) if agg > 0 else 0
-            conflict_flags.append(
-                f"Affiliated broker usage: {len(ncen_full.affiliated_brokers)} affiliated broker(s), "
-                f"${aff_total:,.0f} in commissions ({aff_pct:.1f}% of total)"
-            )
+            agg = ncen_full.aggregate_commission
+            if agg and agg > 0:
+                aff_pct = aff_total / agg * 100
+                conflict_flags.append(
+                    f"Affiliated broker usage: {len(ncen_full.affiliated_brokers)} affiliated broker(s), "
+                    f"${aff_total:,.0f} in commissions ({aff_pct:.1f}% of total)"
+                )
+            else:
+                conflict_flags.append(
+                    f"Affiliated broker usage: {len(ncen_full.affiliated_brokers)} affiliated broker(s), "
+                    f"${aff_total:,.0f} in commissions"
+                )
         if ncen_full.is_admin_affiliated:
             conflict_flags.append("Fund administrator is affiliated with the investment adviser")
         if ncen_full.is_transfer_agent_affiliated:
@@ -477,8 +501,8 @@ def analyze_fund(ticker: str):
             ticker=meta.ticker,
             name=meta.name,
             family=meta.fund_family or "",
-            hidden_low_bps=total_hidden_low if total_hidden_low else None,
-            hidden_high_bps=total_hidden_high if total_hidden_high else None,
+            hidden_low_bps=total_hidden_low,
+            hidden_high_bps=total_hidden_high,
             expense_ratio_bps=expense_ratio_bps,
             turnover_pct=portfolio_turnover,
             net_assets_display=_fmt_dollars(na) if na else "N/A",
@@ -487,8 +511,12 @@ def analyze_fund(ticker: str):
             dollar_impact_hidden_low=dollar_impact.hidden_cost_low,
             dollar_impact_hidden_high=dollar_impact.hidden_cost_high,
         )
-    except Exception:
-        pass  # Leaderboard update is non-critical
+    except Exception as exc:
+        logger.debug("Leaderboard update failed for %s: %s", meta.ticker, exc)
+
+    # Determine EDGAR health status for subtle frontend indicator
+    health = get_edgar_health()
+    edgar_status = "degraded" if health["retries"] > 0 or health["errors"] > 0 else "ok"
 
     return FundAnalysis(
         ticker=meta.ticker,
@@ -506,8 +534,8 @@ def analyze_fund(ticker: str):
         portfolio_turnover=portfolio_turnover,
         max_sales_load=max_sales_load,
         costs=costs,
-        total_hidden_low=round(total_hidden_low, 2) if total_hidden_low else None,
-        total_hidden_high=round(total_hidden_high, 2) if total_hidden_high else None,
+        total_hidden_low=round(total_hidden_low, 2) if total_hidden_low is not None else None,
+        total_hidden_high=round(total_hidden_high, 2) if total_hidden_high is not None else None,
         true_cost_low_bps=true_cost_low_bps,
         true_cost_high_bps=true_cost_high_bps,
         true_cost_low_pct=true_cost_low_pct,
@@ -521,6 +549,7 @@ def analyze_fund(ticker: str):
         asset_mix=mix_list,
         conflict_flags=conflict_flags,
         data_notes=tree.data_notes,
+        edgar_status=edgar_status,
         generated=str(date.today()),
     )
 
@@ -573,7 +602,7 @@ def analyze_sai(ticker: str):
     and soft dollar arrangement details from the fund's 485BPOS filing.
     """
     ticker = ticker.strip().upper()
-    if not ticker.isalpha() or len(ticker) > 6:
+    if not ticker or not ticker.isalpha() or len(ticker) > 6:
         raise HTTPException(400, "Invalid ticker format")
 
     try:
@@ -650,8 +679,8 @@ def analyze_sai(ticker: str):
     except HTTPException:
         raise
     except Exception as e:
-        traceback.print_exc()
-        raise HTTPException(500, f"SAI analysis failed: {e}")
+        logger.exception("SAI analysis failed for %s", ticker)
+        raise HTTPException(500, "SAI analysis failed due to an internal error")
 
 
 @app.get("/api/compare")
@@ -687,7 +716,7 @@ def leaderboard(sort_by: str = "hidden_cost_mid_bps", limit: int = 25):
 def fee_history(ticker: str):
     """Return fee change history from historical 485BPOS filings."""
     ticker = ticker.strip().upper()
-    if not ticker.isalpha() or len(ticker) > 6:
+    if not ticker or not ticker.isalpha() or len(ticker) > 6:
         raise HTTPException(400, "Invalid ticker format")
 
     try:
@@ -737,8 +766,8 @@ def fee_history(ticker: str):
     except ValueError as e:
         raise HTTPException(404, str(e))
     except Exception as e:
-        traceback.print_exc()
-        raise HTTPException(500, f"Fee history failed: {e}")
+        logger.exception("Fee history failed for %s", ticker)
+        raise HTTPException(500, "Fee history failed due to an internal error")
 
 
 @app.get("/api/ncsr/{ticker}")
@@ -749,7 +778,7 @@ def analyze_ncsr(ticker: str):
     from financial highlights, and board advisory contract approval text.
     """
     ticker = ticker.strip().upper()
-    if not ticker.isalpha() or len(ticker) > 6:
+    if not ticker or not ticker.isalpha() or len(ticker) > 6:
         raise HTTPException(400, "Invalid ticker format")
 
     try:
@@ -793,8 +822,22 @@ def analyze_ncsr(ticker: str):
     except HTTPException:
         raise
     except Exception as e:
-        traceback.print_exc()
-        raise HTTPException(500, f"N-CSR analysis failed: {e}")
+        logger.exception("N-CSR analysis failed for %s", ticker)
+        raise HTTPException(500, "N-CSR analysis failed due to an internal error")
+
+
+@app.get("/health")
+def health_check():
+    """Basic health endpoint for load balancers and monitoring."""
+    health = get_edgar_health()
+    return {
+        "status": "ok",
+        "edgar": {
+            "retries": health["retries"],
+            "errors": health["errors"],
+            "status": "degraded" if health["errors"] > 0 else "ok",
+        },
+    }
 
 
 @app.get("/", response_class=HTMLResponse)

@@ -7,12 +7,12 @@ Designed to be screenshot-friendly and shareable on social media.
 
 from __future__ import annotations
 
-import json
+import html
 from datetime import date
 from pathlib import Path
 
-from fundautopsy.models.holdings_tree import FundNode
 from fundautopsy.models.filing_data import DataSourceTag
+from fundautopsy.models.holdings_tree import FundNode
 
 
 def export_html(result: FundNode, output_path: Path) -> None:
@@ -97,11 +97,21 @@ def _format_dollars_full(amount: float) -> str:
     return f"${amount:,.0f}"
 
 
+def _esc(text: str) -> str:
+    """HTML-escape user-controlled text to prevent XSS."""
+    return html.escape(str(text), quote=True)
+
+
 def _render_html(d: dict) -> str:
     """Render the full HTML report."""
 
     net_assets_display = _format_dollars(d["net_assets"]) if d.get("net_assets") else "N/A"
     net_assets_full = _format_dollars_full(d["net_assets"]) if d.get("net_assets") else ""
+
+    # Escape all user-controlled strings
+    safe_name = _esc(d['name'])
+    safe_ticker = _esc(d['ticker'])
+    safe_family = _esc(d['family'])
 
     # Asset mix bars
     asset_cats = {
@@ -118,7 +128,7 @@ def _render_html(d: dict) -> str:
         bar_width = min(pct, 100)
         asset_bars_html += f"""
         <div class="asset-row">
-          <span class="asset-label">{label}</span>
+          <span class="asset-label">{_esc(label)}</span>
           <div class="asset-bar-track">
             <div class="asset-bar-fill" style="width:{bar_width}%;background:{color}"></div>
           </div>
@@ -146,20 +156,20 @@ def _render_html(d: dict) -> str:
     # Data notes
     notes_html = ""
     for note in d.get("data_notes", []):
-        notes_html += f'<li>{note}</li>'
+        notes_html += f'<li>{_esc(note)}</li>'
 
     # Commission breakdown callout
     comm_note = d.get("brokerage_note", "")
     comm_callout = ""
     if comm_note:
-        comm_callout = f'<div class="callout">{comm_note}</div>'
+        comm_callout = f'<div class="callout">{_esc(comm_note)}</div>'
 
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Fund Autopsy — {d['ticker']} | Tombstone Research</title>
+<title>Fund Autopsy — {safe_ticker} | Tombstone Research</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap');
 
@@ -599,9 +609,9 @@ def _render_html(d: dict) -> str:
     </div>
 
     <div class="fund-name">
-      {d['name']} <span class="fund-ticker">{d['ticker']}</span>
+      {safe_name} <span class="fund-ticker">{safe_ticker}</span>
     </div>
-    <div class="fund-family">{d['family']}</div>
+    <div class="fund-family">{safe_family}</div>
 
     <div class="fund-meta">
       <div class="meta-item">

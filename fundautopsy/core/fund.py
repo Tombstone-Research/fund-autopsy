@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+from fundautopsy.data.edgar import MutualFundIdentifier, get_edgar_client, resolve_ticker
 from fundautopsy.models.fund_metadata import FundMetadata
-from fundautopsy.data.edgar import resolve_ticker, get_edgar_client, MutualFundIdentifier
 
 
 def identify_fund(ticker: str) -> FundMetadata:

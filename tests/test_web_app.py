@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 from fundautopsy.web.app import (
-    app,
-    CostComponent,
-    FeeComponent,
     AssetMix,
     BrokerInfo,
+    CostComponent,
+    DollarImpact,
+    FeeComponent,
+    FundAnalysis,
     SecuritiesLendingInfo,
     ServiceProviders,
-    DollarImpact,
-    FundAnalysis,
+    app,
 )
 
 

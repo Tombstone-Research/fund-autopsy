@@ -1,10 +1,8 @@
 """Tests for export functionality."""
 
-import pytest
+import tempfile
 from datetime import date
 from pathlib import Path
-import tempfile
-import json
 
 from fundautopsy.export.html_export import (
     _extract_report_data,
@@ -12,10 +10,10 @@ from fundautopsy.export.html_export import (
     _format_dollars_full,
     export_html,
 )
-from fundautopsy.models.holdings_tree import FundNode
+from fundautopsy.models.cost_breakdown import CostBreakdown
+from fundautopsy.models.filing_data import DataSourceTag, NPortData, NPortHolding, TaggedValue
 from fundautopsy.models.fund_metadata import FundMetadata
-from fundautopsy.models.filing_data import NPortData, NPortHolding, DataSourceTag, TaggedValue
-from fundautopsy.models.cost_breakdown import CostBreakdown, CostRange
+from fundautopsy.models.holdings_tree import FundNode
 
 
 class TestFormatDollars:

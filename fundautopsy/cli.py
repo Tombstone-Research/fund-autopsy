@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from enum import Enum
 from pathlib import Path
-from typing import Optional
 
 import typer
 from rich.console import Console
@@ -39,13 +38,13 @@ def analyze(
     detail: DetailLevel = typer.Option(
         DetailLevel.retail, "--detail", "-d", help="Output detail level"
     ),
-    export: Optional[ExportFormat] = typer.Option(
+    export: ExportFormat | None = typer.Option(
         None, "--export", "-e", help="Export format"
     ),
-    output: Optional[Path] = typer.Option(
+    output: Path | None = typer.Option(
         None, "--output", "-o", help="Output file path for export"
     ),
-    history: Optional[str] = typer.Option(
+    history: str | None = typer.Option(
         None, "--history", help="Date range for time series (e.g., 2018-2025)"
     ),
 ) -> None:
@@ -53,10 +52,10 @@ def analyze(
     console.print(f"\n[bold]Fund Autopsy[/bold] — Analyzing [cyan]{ticker.upper()}[/cyan]\n")
 
     # Pipeline stages
-    from fundautopsy.core.fund import identify_fund
-    from fundautopsy.core.structure import detect_structure
     from fundautopsy.core.costs import compute_costs
+    from fundautopsy.core.fund import identify_fund
     from fundautopsy.core.rollup import rollup_costs
+    from fundautopsy.core.structure import detect_structure
     from fundautopsy.models.fund_metadata import FundMetadata
     from fundautopsy.models.holdings_tree import FundNode
 
@@ -123,15 +122,15 @@ def compare(
         f"[cyan]{', '.join(t.upper() for t in tickers)}[/cyan]\n"
     )
 
-    from fundautopsy.views.comparison import render_comparison
     from fundautopsy.models.holdings_tree import FundNode
+    from fundautopsy.views.comparison import render_comparison
 
     results: list[FundNode] = []
     for ticker in tickers:
-        from fundautopsy.core.fund import identify_fund
-        from fundautopsy.core.structure import detect_structure
         from fundautopsy.core.costs import compute_costs
+        from fundautopsy.core.fund import identify_fund
         from fundautopsy.core.rollup import rollup_costs
+        from fundautopsy.core.structure import detect_structure
         from fundautopsy.models.fund_metadata import FundMetadata
 
         with console.status(f"[bold green]Analyzing {ticker.upper()}..."):

@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Optional
+from dataclasses import dataclass
 
 from fundautopsy.models.filing_data import DataSourceTag, TaggedValue
 
@@ -15,7 +14,7 @@ class CostRange:
     low_bps: float
     high_bps: float
     tag: DataSourceTag
-    methodology: Optional[str] = None
+    methodology: str | None = None
 
     @property
     def midpoint_bps(self) -> float:
@@ -41,32 +40,45 @@ class CostBreakdown:
     fund_name: str
 
     # Reported costs
-    expense_ratio_bps: Optional[TaggedValue] = None  # Net expense ratio
-    management_fee_bps: Optional[TaggedValue] = None
-    twelve_b1_fee_bps: Optional[TaggedValue] = None
-    other_expenses_bps: Optional[TaggedValue] = None
+    expense_ratio_bps: TaggedValue | None = None  # Net expense ratio
+    management_fee_bps: TaggedValue | None = None
+    twelve_b1_fee_bps: TaggedValue | None = None
+    other_expenses_bps: TaggedValue | None = None
 
     # N-CEN derived
-    brokerage_commissions_bps: Optional[TaggedValue] = None  # C.6.a / net assets
-    soft_dollar_commissions_bps: Optional[TaggedValue] = None  # C.6.b / net assets
-    soft_dollar_share_pct: Optional[TaggedValue] = None  # C.6.b / C.6.a
+    brokerage_commissions_bps: TaggedValue | None = None  # C.6.a / net assets
+    soft_dollar_commissions_bps: TaggedValue | None = None  # C.6.b / net assets
+    soft_dollar_share_pct: TaggedValue | None = None  # C.6.b / C.6.a
 
     # Estimated costs
-    bid_ask_spread_cost: Optional[CostRange] = None
-    market_impact_cost: Optional[CostRange] = None
+    bid_ask_spread_cost: CostRange | None = None
+    market_impact_cost: CostRange | None = None
 
     # Composite
     @property
-    def total_reported_bps(self) -> Optional[float]:
-        """Expense ratio + brokerage commissions."""
-        er = self.expense_ratio_bps.value if self.expense_ratio_bps and self.expense_ratio_bps.is_available else None
-        bc = self.brokerage_commissions_bps.value if self.brokerage_commissions_bps and self.brokerage_commissions_bps.is_available else None
+    def total_reported_bps(self) -> float | None:
+        """Expense ratio + brokerage commissions.
+
+        Returns whatever reported cost data is available. If only brokerage
+        commissions exist (no prospectus ER), those are still real costs
+        that should be surfaced rather than returning None.
+        """
+        er = (
+            self.expense_ratio_bps.value
+            if self.expense_ratio_bps and self.expense_ratio_bps.is_available else None
+        )
+        bc = (
+            self.brokerage_commissions_bps.value
+            if self.brokerage_commissions_bps and self.brokerage_commissions_bps.is_available else None
+        )
         if er is not None:
             return er + (bc or 0)
+        if bc is not None:
+            return bc
         return None
 
     @property
-    def total_estimated_low_bps(self) -> Optional[float]:
+    def total_estimated_low_bps(self) -> float | None:
         """Total reported + low end of estimated costs."""
         reported = self.total_reported_bps
         if reported is None:
@@ -76,7 +88,7 @@ class CostBreakdown:
         return reported + spread_low + impact_low
 
     @property
-    def total_estimated_high_bps(self) -> Optional[float]:
+    def total_estimated_high_bps(self) -> float | None:
         """Total reported + high end of estimated costs."""
         reported = self.total_reported_bps
         if reported is None:
@@ -86,7 +98,7 @@ class CostBreakdown:
         return reported + spread_high + impact_high
 
     @property
-    def hidden_cost_gap_bps(self) -> Optional[tuple[float, float]]:
+    def hidden_cost_gap_bps(self) -> tuple[float, float] | None:
         """The gap between stated expense ratio and estimated total cost."""
         er = self.expense_ratio_bps.value if self.expense_ratio_bps and self.expense_ratio_bps.is_available else None
         low = self.total_estimated_low_bps

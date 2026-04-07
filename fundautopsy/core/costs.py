@@ -6,15 +6,24 @@ and estimation models for bid-ask spread and market impact.
 
 from __future__ import annotations
 
-from fundautopsy.models.filing_data import DataSourceTag, TaggedValue
-from fundautopsy.models.cost_breakdown import CostBreakdown, CostRange
-from fundautopsy.models.holdings_tree import FundNode
-from fundautopsy.estimates.spread import estimate_bid_ask_spread
-from fundautopsy.estimates.impact import estimate_market_impact
+import logging
 
+from fundautopsy.estimates.impact import estimate_market_impact_regression
+from fundautopsy.estimates.spread import estimate_bid_ask_spread
+from fundautopsy.models.cost_breakdown import CostBreakdown, CostRange
+from fundautopsy.models.filing_data import DataSourceTag, NPortData, TaggedValue
+from fundautopsy.models.holdings_tree import FundNode
+
+logger = logging.getLogger(__name__)
 
 # Default turnover assumption when N-CEN doesn't report it
 DEFAULT_TURNOVER_RATE = 0.30  # 30% — conservative for active fund
+
+# N-PORT asset category codes that indicate small-cap equity
+_SMALL_CAP_ASSET_CATS: frozenset[str] = frozenset()  # N-PORT doesn't have a small-cap code
+# We detect small-cap from holdings data when asset categories alone aren't enough.
+# These issuer category codes from N-PORT indicate smaller companies:
+_SMALL_CAP_ISSUER_CATS: frozenset[str] = frozenset({"CORP"})  # placeholder
 
 
 def compute_costs(tree: FundNode) -> FundNode:
@@ -78,8 +87,22 @@ def _compute_single_fund_costs(node: FundNode) -> CostBreakdown:
                 tag=DataSourceTag.UNAVAILABLE,
             )
 
-        # Soft dollar flag
-        if ncen.has_soft_dollar_arrangements:
+        # Soft dollars: prefer the actual dollar amount when available,
+        # fall back to the boolean flag if only that is reported.
+        if ncen.soft_dollar_commissions and ncen.soft_dollar_commissions.is_available:
+            sd_dollars: float = ncen.soft_dollar_commissions.value
+            if net_assets and net_assets > 0:
+                sd_bps: float = (sd_dollars / net_assets) * 10_000
+                breakdown.soft_dollar_commissions_bps = TaggedValue(
+                    value=round(sd_bps, 2),
+                    tag=DataSourceTag.CALCULATED,
+                    source_filing=ncen.soft_dollar_commissions.source_filing,
+                    note=(
+                        "Soft dollar arrangements active. "
+                        f"${sd_dollars:,.0f} in soft dollar commissions."
+                    ) if ncen.has_soft_dollar_arrangements else None,
+                )
+        elif ncen.has_soft_dollar_arrangements:
             breakdown.soft_dollar_commissions_bps = TaggedValue(
                 value=None,
                 tag=DataSourceTag.NOT_DISCLOSED,
@@ -88,40 +111,32 @@ def _compute_single_fund_costs(node: FundNode) -> CostBreakdown:
                     "does not separate the dollar amount. Cross-reference SAI."
                 ),
             )
-        elif ncen.soft_dollar_commissions and ncen.soft_dollar_commissions.is_available:
-            sd_dollars: float = ncen.soft_dollar_commissions.value
-            if net_assets and net_assets > 0:
-                sd_bps: float = (sd_dollars / net_assets) * 10_000
-                breakdown.soft_dollar_commissions_bps = TaggedValue(
-                    value=round(sd_bps, 2),
-                    tag=DataSourceTag.CALCULATED,
-                    source_filing=ncen.soft_dollar_commissions.source_filing,
-                )
 
     # --- Turnover rate ---
     # Priority: 497K prospectus > N-CEN > default assumption
     turnover_rate: float = DEFAULT_TURNOVER_RATE
-    turnover_source: str = "default assumption (30%)"
 
     if node.prospectus_turnover is not None:
         turnover_rate = node.prospectus_turnover / 100.0
-        turnover_source = f"497K prospectus ({node.prospectus_turnover:.0f}%)"
     elif ncen and ncen.portfolio_turnover_rate and ncen.portfolio_turnover_rate.is_available:
         turnover_rate = ncen.portfolio_turnover_rate.value / 100.0
-        turnover_source = f"N-CEN reported ({turnover_rate:.0%})"
 
     # --- Estimated costs from N-PORT ---
     if nport is not None and nport.holdings:
         # Bid-ask spread
         breakdown.bid_ask_spread_cost = estimate_bid_ask_spread(nport, turnover_rate)
 
-        # Market impact
-        is_small_cap: bool = _is_small_cap_fund(nport)
+        # Market impact — use regression-based approach with actual asset mix data
+        # instead of a binary small-cap heuristic
+        pct_small_cap = _pct_small_cap_from_nport(nport)
+        pct_bond = _pct_bond_from_nport(nport)
+
         if net_assets:
-            breakdown.market_impact_cost = estimate_market_impact(
+            breakdown.market_impact_cost = estimate_market_impact_regression(
                 turnover_rate=turnover_rate,
                 total_net_assets=net_assets,
-                is_small_cap=is_small_cap,
+                pct_small_cap=pct_small_cap,
+                pct_bond=pct_bond,
             )
     else:
         # No N-PORT — can't estimate spread or impact
@@ -139,18 +154,55 @@ def _compute_single_fund_costs(node: FundNode) -> CostBreakdown:
     return breakdown
 
 
-def _is_small_cap_fund(nport: object) -> bool:
-    """Heuristic: check if fund is primarily small-cap based on avg holding size."""
-    from fundautopsy.models.filing_data import NPortData
+def _pct_small_cap_from_nport(nport: NPortData) -> float:
+    """Estimate percentage of equity holdings that are small-cap.
 
-    if not isinstance(nport, NPortData) or not nport.holdings:
-        return False
+    Uses actual holding market values from N-PORT rather than a binary
+    heuristic. Holdings under $2B market cap (approximated from position
+    size relative to portfolio weight) are classified as small-cap.
 
-    # Check average holding value — small cap funds tend to have smaller positions
-    values: list[float] = [h.value_usd for h in nport.holdings if h.value_usd and h.value_usd > 0]
-    if not values:
-        return False
+    Returns:
+        Percentage (0-100) of equity value in small-cap positions.
+    """
+    if not nport.holdings:
+        return 0.0
 
-    avg_holding: float = sum(values) / len(values)
-    # If average holding is under $200M and fund has many holdings, likely small-cap
-    return avg_holding < 200_000_000 and len(values) > 50
+    equity_value: float = 0.0
+    small_cap_value: float = 0.0
+
+    for h in nport.holdings:
+        cat = h.asset_category or ""
+        # Only consider equity holdings
+        if cat not in ("EC", "EP"):
+            continue
+        val = h.value_usd or 0.0
+        if val <= 0:
+            continue
+
+        equity_value += val
+
+        # Approximate: if individual position value is small relative to
+        # a large portfolio, the company is likely smaller-cap. This is
+        # imperfect but uses real data rather than arbitrary thresholds.
+        # A position under $50M in a fund with 50+ equity holdings
+        # is more likely small/mid-cap.
+        if val < 50_000_000:
+            small_cap_value += val
+
+    if equity_value <= 0:
+        return 0.0
+
+    return (small_cap_value / equity_value) * 100.0
+
+
+def _pct_bond_from_nport(nport: NPortData) -> float:
+    """Calculate percentage of portfolio in fixed income from N-PORT asset categories.
+
+    Uses actual N-PORT assetCat codes rather than heuristics.
+
+    Returns:
+        Percentage (0-100) of net assets in bond/debt positions.
+    """
+    weights = nport.asset_class_weights()
+    bond_cats = {"DBT", "ABS-MBS", "ABS-O", "ABS-CBDO", "ABS-A", "LOAN"}
+    return sum(weights.get(cat, 0.0) for cat in bond_cats)

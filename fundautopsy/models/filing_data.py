@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date
 from enum import Enum
-from typing import Optional
 
 
 class DataSourceTag(str, Enum):
@@ -22,10 +21,10 @@ class DataSourceTag(str, Enum):
 class TaggedValue:
     """A numeric value paired with its data source tag."""
 
-    value: Optional[float]
+    value: float | None
     tag: DataSourceTag
-    source_filing: Optional[str] = None  # e.g., "N-CEN 2024-03-15"
-    note: Optional[str] = None
+    source_filing: str | None = None  # e.g., "N-CEN 2024-03-15"
+    note: str | None = None
 
     @property
     def is_available(self) -> bool:
@@ -45,19 +44,19 @@ class NCENData:
     series_id: str
 
     # Item C.6 — Brokerage and soft dollars
-    has_soft_dollar_arrangements: Optional[bool] = None  # C.6 yes/no
-    total_brokerage_commissions: Optional[TaggedValue] = None  # C.6.a ($)
-    soft_dollar_commissions: Optional[TaggedValue] = None  # C.6.b ($)
-    soft_dollar_transaction_volume: Optional[TaggedValue] = None  # C.6.c ($)
+    has_soft_dollar_arrangements: bool | None = None  # C.6 yes/no
+    total_brokerage_commissions: TaggedValue | None = None  # C.6.a ($)
+    soft_dollar_commissions: TaggedValue | None = None  # C.6.b ($)
+    soft_dollar_transaction_volume: TaggedValue | None = None  # C.6.c ($)
 
     # Item C.7 — Turnover
-    portfolio_turnover_rate: Optional[TaggedValue] = None
+    portfolio_turnover_rate: TaggedValue | None = None
 
     # Item B.1 — Net assets
-    total_net_assets: Optional[TaggedValue] = None
+    total_net_assets: TaggedValue | None = None
 
     @property
-    def soft_dollar_share_pct(self) -> Optional[float]:
+    def soft_dollar_share_pct(self) -> float | None:
         """Soft dollar commissions as % of total commissions."""
         if (
             self.total_brokerage_commissions
@@ -79,18 +78,18 @@ class NPortHolding:
     """A single holding from N-PORT."""
 
     name: str
-    cusip: Optional[str] = None
-    isin: Optional[str] = None
-    balance: Optional[float] = None  # Shares/units
-    value_usd: Optional[float] = None  # Market value
-    pct_of_net_assets: Optional[float] = None
-    asset_category: Optional[str] = None
-    issuer_category: Optional[str] = None
+    cusip: str | None = None
+    isin: str | None = None
+    balance: float | None = None  # Shares/units
+    value_usd: float | None = None  # Market value
+    pct_of_net_assets: float | None = None
+    asset_category: str | None = None
+    issuer_category: str | None = None
 
     # Fund-of-funds detection
     is_registered_investment_company: bool = False
-    underlying_cik: Optional[str] = None
-    underlying_ticker: Optional[str] = None
+    underlying_cik: str | None = None
+    underlying_ticker: str | None = None
 
 
 @dataclass
@@ -100,7 +99,7 @@ class NPortData:
     filing_date: date
     reporting_period_end: date
     series_id: str
-    total_net_assets: Optional[float] = None
+    total_net_assets: float | None = None
     holdings: list[NPortHolding] = field(default_factory=list)
 
     @property

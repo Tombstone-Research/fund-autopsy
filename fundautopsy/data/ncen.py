@@ -13,13 +13,18 @@ XML namespace: http://www.sec.gov/edgar/ncen
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Optional
 
+import httpx
+from defusedxml.lxml import fromstring as _safe_fromstring
 from lxml import etree
 
 from fundautopsy.models.filing_data import NCENData, DataSourceTag, TaggedValue
+
+logger = logging.getLogger(__name__)
 from fundautopsy.data.edgar import (
     MutualFundIdentifier,
     get_edgar_client,
@@ -193,7 +198,11 @@ def retrieve_ncen(
                     if xml_bytes and xml_bytes[:100].lower().find(b'<html') == -1:
                         break
                     xml_bytes = None
-                except Exception:
+                except (httpx.HTTPStatusError, httpx.TransportError) as exc:
+                    logger.debug(
+                        "N-CEN download failed for %s/%s: %s",
+                        filing.accession_number, doc_name, exc,
+                    )
                     continue
 
             if not xml_bytes:
@@ -233,7 +242,7 @@ def parse_ncen_xml(xml_content: bytes, target_series_id: str) -> Optional[NCENFu
         Parsed NCENFullData for the target series, or None.
     """
     try:
-        root = etree.fromstring(xml_content)
+        root = _safe_fromstring(xml_content)
     except etree.XMLSyntaxError:
         return None
 

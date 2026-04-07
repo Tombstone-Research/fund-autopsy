@@ -7,14 +7,14 @@ explicit confidence caveats and wide ranges.
 
 from __future__ import annotations
 
+from fundautopsy.estimates.assumptions import (
+    BOND_IMPACT_ASSUMPTIONS,
+    BOND_TURNOVER_LOW_HIGH_THRESHOLD,
+    IMPACT_ASSUMPTIONS,
+    TURNOVER_LOW_HIGH_THRESHOLD,
+)
 from fundautopsy.models.cost_breakdown import CostRange
 from fundautopsy.models.filing_data import DataSourceTag
-from fundautopsy.estimates.assumptions import (
-    IMPACT_ASSUMPTIONS,
-    BOND_IMPACT_ASSUMPTIONS,
-    TURNOVER_LOW_HIGH_THRESHOLD,
-    BOND_TURNOVER_LOW_HIGH_THRESHOLD,
-)
 
 
 def estimate_market_impact(

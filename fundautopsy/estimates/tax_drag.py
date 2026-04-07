@@ -29,11 +29,9 @@ Academic references:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
 
 from fundautopsy.models.cost_breakdown import CostRange
 from fundautopsy.models.filing_data import DataSourceTag
-
 
 # Federal tax rate assumptions (2024-2025 brackets)
 # Top federal ordinary income rate (37% bracket, married filing jointly)
@@ -288,7 +286,7 @@ def estimate_tax_drag(
 def tax_drag_comparison_text(
     fund_ticker: str,
     tax_drag: TaxDragEstimate,
-    expense_ratio_pct: Optional[float] = None,
+    expense_ratio_pct: float | None = None,
 ) -> str:
     """Generate a plain-text comparison of tax drag vs expense ratio.
 
@@ -307,7 +305,10 @@ def tax_drag_comparison_text(
         elif midpoint > er_bps * 0.5:
             text += f" (adds {midpoint/er_bps:.0%} to the {er_bps:.0f} bps expense ratio)"
 
-    text += f"\n  STCG: {tax_drag.stcg_drag_bps:.0f} bps | LTCG: {tax_drag.ltcg_drag_bps:.0f} bps | Dividends: {tax_drag.dividend_drag_bps:.0f} bps"
+    text += (
+        f"\n  STCG: {tax_drag.stcg_drag_bps:.0f} bps | LTCG: {tax_drag.ltcg_drag_bps:.0f} bps"
+        f" | Dividends: {tax_drag.dividend_drag_bps:.0f} bps"
+    )
     text += f"\n  Turnover: {tax_drag.turnover_rate_pct:.0f}% | Est. STCG share: {tax_drag.implied_stcg_share:.0%}"
 
     return text

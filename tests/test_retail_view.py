@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
-from fundautopsy.views import retail
-from fundautopsy.models.filing_data import DataSourceTag, TaggedValue
+from unittest.mock import MagicMock
+
 from fundautopsy.models.cost_breakdown import CostBreakdown, CostRange
+from fundautopsy.models.filing_data import DataSourceTag, TaggedValue
 from fundautopsy.models.fund_metadata import FundMetadata
 from fundautopsy.models.holdings_tree import FundNode
+from fundautopsy.views import retail
 
 
 def _make_cost_breakdown(

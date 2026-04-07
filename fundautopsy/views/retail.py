@@ -11,8 +11,8 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from fundautopsy.models.holdings_tree import FundNode
 from fundautopsy.models.filing_data import DataSourceTag
+from fundautopsy.models.holdings_tree import FundNode
 
 
 def render(result: FundNode, console: Console) -> None:

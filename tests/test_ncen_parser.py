@@ -1,6 +1,5 @@
 """Tests for N-CEN filing parser."""
 
-import pytest
 from fundautopsy.data.ncen import parse_ncen_xml
 from fundautopsy.models.filing_data import DataSourceTag
 

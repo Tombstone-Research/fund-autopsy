@@ -1,16 +1,11 @@
 """Tests for cash drag estimation."""
 
-import pytest
 from datetime import date
 
 from fundautopsy.estimates.cash_drag import (
     estimate_cash_drag,
-    OPERATIONAL_CASH_BASELINE_PCT,
-    DRAG_PER_PCT_LOW_BPS,
-    DRAG_PER_PCT_HIGH_BPS,
-    CASH_FLAG_THRESHOLD_PCT,
 )
-from fundautopsy.models.filing_data import NPortData, NPortHolding, DataSourceTag
+from fundautopsy.models.filing_data import NPortData, NPortHolding
 
 
 class TestCashDragEstimation:

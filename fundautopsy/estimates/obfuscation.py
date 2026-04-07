@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Optional, List
 
 
 @dataclass
@@ -220,7 +219,7 @@ def _assign_grade(score: float) -> str:
 
 def score_obfuscation(
     text: str,
-    html: Optional[str] = None,
+    html: str | None = None,
 ) -> ObfuscationScore:
     """Score a fund filing's obfuscation level.
 
@@ -238,8 +237,8 @@ def score_obfuscation(
         return result
 
     # Tokenize
-    sentences: List[str] = [s.strip() for s in re.split(r'[.!?]+', text) if s.strip() and len(s.strip()) > 10]
-    words: List[str] = [w for w in re.findall(r'\b[a-zA-Z]+\b', text) if len(w) > 1]
+    sentences: list[str] = [s.strip() for s in re.split(r'[.!?]+', text) if s.strip() and len(s.strip()) > 10]
+    words: list[str] = [w for w in re.findall(r'\b[a-zA-Z]+\b', text) if len(w) > 1]
 
     if not sentences or not words:
         return result
@@ -300,7 +299,7 @@ def score_obfuscation(
     )
 
     # Fragmentation (how far apart fee-related terms are in the document)
-    fee_mentions: List[int] = [m.start() for m in re.finditer(
+    fee_mentions: list[int] = [m.start() for m in re.finditer(
         r'(?i)(?:expense|fee|commission|cost|charge)', text
     )]
     if len(fee_mentions) > 2:

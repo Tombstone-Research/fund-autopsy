@@ -10,10 +10,9 @@ from fundautopsy.data.leaderboard import (
     _grade_from_hidden,
     _load_leaderboard,
     _save_leaderboard,
-    update_leaderboard,
     get_leaderboard,
     get_leaderboard_stats,
-    LeaderboardEntry,
+    update_leaderboard,
 )
 
 

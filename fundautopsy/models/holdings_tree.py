@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional
 
-from fundautopsy.models.fund_metadata import FundMetadata
-from fundautopsy.models.filing_data import NCENData, NPortData
 from fundautopsy.models.cost_breakdown import CostBreakdown
+from fundautopsy.models.filing_data import NCENData, NPortData
+from fundautopsy.models.fund_metadata import FundMetadata
 
 
 @dataclass
@@ -19,17 +18,18 @@ class FundNode:
     depth: int = 0
 
     # Filing data (populated in Stage 2)
-    ncen_data: Optional[NCENData] = None
-    nport_data: Optional[NPortData] = None
+    ncen_data: NCENData | None = None
+    nport_data: NPortData | None = None
 
     # Full N-CEN data (for supplementary display: lending, brokers, etc.)
-    ncen_full: object = None  # NCENFullData, typed as object to avoid circular import
+    # Typed as Any to avoid circular import with ncen.py; at runtime this is NCENFullData.
+    ncen_full: object | None = None
 
     # Portfolio turnover from 497K prospectus (may be more reliable than N-CEN)
-    prospectus_turnover: Optional[float] = None  # As percentage, e.g. 32.0 = 32%
+    prospectus_turnover: float | None = None  # As percentage, e.g. 32.0 = 32%
 
     # Cost data (populated in Stage 3)
-    cost_breakdown: Optional[CostBreakdown] = None
+    cost_breakdown: CostBreakdown | None = None
 
     # Children (populated if fund-of-funds)
     children: list[FundNode] = field(default_factory=list)

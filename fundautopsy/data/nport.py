@@ -12,14 +12,19 @@ XML namespace: http://www.sec.gov/edgar/nport
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import field
 from datetime import date
 from typing import Optional
 
+import httpx
+from defusedxml.lxml import fromstring as _safe_fromstring
 from lxml import etree
 
 from fundautopsy.models.filing_data import NPortData, NPortHolding
+
+logger = logging.getLogger(__name__)
 from fundautopsy.data.edgar import (
     MutualFundIdentifier,
     get_edgar_client,
@@ -81,7 +86,11 @@ def retrieve_nport(
                     if xml_bytes and xml_bytes[:100].lower().find(b'<html') == -1:
                         break
                     xml_bytes = None
-                except Exception:
+                except (httpx.HTTPStatusError, httpx.TransportError) as exc:
+                    logger.debug(
+                        "N-PORT download failed for %s/%s: %s",
+                        filing.accession_number, doc_name, exc,
+                    )
                     continue
 
             if not xml_bytes:
@@ -117,7 +126,7 @@ def parse_nport_xml(xml_content: bytes, target_series_id: str) -> Optional[NPort
         Parsed NPortData with all holdings, or None if series doesn't match.
     """
     try:
-        root = etree.fromstring(xml_content)
+        root = _safe_fromstring(xml_content)
     except etree.XMLSyntaxError:
         return None
 
@@ -177,10 +186,10 @@ def _parse_holding(inv: etree._Element) -> Optional[NPortHolding]:
     holding.asset_category = _text(inv, "assetCat") or None
     holding.issuer_category = _text(inv, "issuerCat") or None
 
-    # ISIN from identifiers block
+    # ISIN from identifiers block (normalize to None for missing)
     isin_elem = inv.find(".//n:isin", NPORT_NS)
     if isin_elem is not None:
-        holding.isin = isin_elem.get("value")
+        holding.isin = isin_elem.get("value") or None
 
     # Numeric fields
     balance_text = _text(inv, "balance")

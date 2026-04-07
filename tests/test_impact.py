@@ -1,6 +1,5 @@
 """Tests for market impact estimation."""
 
-import pytest
 
 from fundautopsy.estimates.impact import (
     estimate_market_impact,

@@ -1,15 +1,9 @@
 """Tests for tax drag estimation."""
 
-import pytest
 
 from fundautopsy.estimates.tax_drag import (
     estimate_tax_drag,
     tax_drag_comparison_text,
-    FEDERAL_ORDINARY_INCOME_RATE,
-    FEDERAL_LTCG_RATE,
-    FEDERAL_QUALIFIED_DIVIDEND_RATE,
-    STATE_TAX_ESTIMATE,
-    NIIT_RATE,
 )
 
 

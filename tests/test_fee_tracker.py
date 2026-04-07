@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from fundautopsy.data.fee_tracker import (
-    FeeSnapshot,
     FeeChange,
     FeeHistory,
+    FeeSnapshot,
     _compare_snapshots,
 )
 

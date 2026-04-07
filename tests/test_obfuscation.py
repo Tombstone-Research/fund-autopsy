@@ -1,19 +1,18 @@
 """Tests for fund filing obfuscation scoring."""
 
-import pytest
 
 from fundautopsy.estimates.obfuscation import (
-    score_obfuscation,
+    _assign_grade,
     _count_syllables,
-    _is_complex_word,
     _detect_passive_voice,
     _flesch_kincaid_grade,
     _gunning_fog,
-    _score_readability,
-    _score_length,
+    _is_complex_word,
     _score_complexity,
+    _score_length,
     _score_passive_voice,
-    _assign_grade,
+    _score_readability,
+    score_obfuscation,
 )
 
 

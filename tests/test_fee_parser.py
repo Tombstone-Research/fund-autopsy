@@ -5,12 +5,12 @@ from __future__ import annotations
 from fundautopsy.data.fee_parser import (
     ParsedFees,
     _extract_pct,
-    _match_label,
-    _find_class_column,
-    _parse_table_rows,
-    _parse_div_layout,
-    parse_497k_html,
     _extract_turnover_and_load,
+    _find_class_column,
+    _match_label,
+    _parse_div_layout,
+    _parse_table_rows,
+    parse_497k_html,
 )
 
 
@@ -33,12 +33,12 @@ class TestExtractPct:
         """Extract should handle leading/trailing whitespace."""
         assert _extract_pct("  0.50%  ") == 0.50
 
-    def test_extract_returns_zero_for_none_labels(self):
-        """Extract should return 0.0 for 'none', 'n/a', etc."""
-        assert _extract_pct("none") == 0.0
-        assert _extract_pct("n/a") == 0.0
-        assert _extract_pct("—") == 0.0
-        assert _extract_pct("–") == 0.0
+    def test_extract_returns_none_for_placeholder_labels(self):
+        """Extract should return None for 'none', 'n/a', dashes — missing, not zero."""
+        assert _extract_pct("none") is None
+        assert _extract_pct("n/a") is None
+        assert _extract_pct("—") is None
+        assert _extract_pct("–") is None
 
     def test_extract_number_without_percent(self):
         """Extract should parse number without % sign."""
@@ -47,21 +47,24 @@ class TestExtractPct:
     def test_extract_returns_none_for_invalid(self):
         """Extract should return None for invalid input."""
         assert _extract_pct("not a number") is None
-        # Empty string is treated as "none", so returns 0.0
-        assert _extract_pct("") == 0.0
+        # Empty string is treated as missing data
+        assert _extract_pct("") is None
 
     def test_extract_sanity_check_high_values(self):
-        """Extract should parse high values from percentage pattern.
+        """Extract should pass through high values with % sign, reject bare >=100.
 
-        Note: The sanity check only applies to raw numbers without %,
-        not to percentages found via the percentage pattern.
+        Values above the sanity threshold but below 100 are returned with a
+        warning log. Bare numbers >= 100 (likely years or non-fee data) are
+        rejected. Explicit percentages (with % sign) are always respected.
         """
-        # Percentages with % sign are parsed directly
+        # Percentages with % sign are parsed directly regardless of value
         assert _extract_pct("25%") == 25.0
         assert _extract_pct("100%") == 100.0
-        # Raw numbers >= 20 without % are rejected
-        assert _extract_pct("25") is None
+        # Raw numbers above threshold but below 100 are returned (with warning logged)
+        assert _extract_pct("25") == 25.0
+        # Raw numbers >= 100 without % sign are rejected (likely years)
         assert _extract_pct("100") is None
+        assert _extract_pct("2024") is None
 
     def test_extract_sanity_check_edge_case(self):
         """Extract should accept reasonable edge case values."""
@@ -196,7 +199,7 @@ class TestParseTableRows:
         </tr>
         """
         # Target Class I (column 1)
-        fees = _parse_table_rows(html, "CLASS_I")
+        _parse_table_rows(html, "CLASS_I")
         # Should find 0.25% for Class I if matching works
         # Note: This depends on full HTML context with header detection
 

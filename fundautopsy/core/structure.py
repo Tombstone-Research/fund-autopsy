@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
-from fundautopsy.models.fund_metadata import FundMetadata
-from fundautopsy.models.filing_data import NPortData
-from fundautopsy.models.holdings_tree import FundNode
 from fundautopsy.data.edgar import MutualFundIdentifier
 from fundautopsy.data.ncen import retrieve_ncen
-from fundautopsy.data.nport import retrieve_nport, detect_fund_holdings
+from fundautopsy.data.nport import detect_fund_holdings, retrieve_nport
+from fundautopsy.models.filing_data import NPortData
+from fundautopsy.models.fund_metadata import FundMetadata
+from fundautopsy.models.holdings_tree import FundNode
 
 
 def detect_structure(fund: FundMetadata, depth: int = 0) -> FundNode:
@@ -58,7 +56,7 @@ def detect_structure(fund: FundMetadata, depth: int = 0) -> FundNode:
         node.data_notes.append("N-CEN filing not found — brokerage commission data unavailable")
 
     # Retrieve N-PORT
-    nport: Optional[NPortData] = retrieve_nport(fund_id)
+    nport: NPortData | None = retrieve_nport(fund_id)
     if nport is not None:
         node.nport_data = nport
         node.nport_available = True
@@ -71,8 +69,14 @@ def detect_structure(fund: FundMetadata, depth: int = 0) -> FundNode:
         fund_holdings = detect_fund_holdings(nport)
         if fund_holdings:
             total_fund_pct: float = sum(h.pct_of_net_assets or 0 for h in fund_holdings)
-            # Only classify as true fund-of-funds if underlying funds are >25% of assets
-            # Cash sweep vehicles (money market funds) don't make a fund a FoF
+            # Only classify as true fund-of-funds if underlying funds are >25% of assets.
+            # Rationale: many equity funds hold small (<5%) positions in money market
+            # sweep vehicles for cash management. A 25% threshold catches genuine
+            # fund-of-funds structures (target-date funds, balanced funds that allocate
+            # to underlying portfolios) while excluding incidental cash sweeps.
+            # SEC Form N-CEN Item B.4 asks "Is this a FoF?" with no percentage
+            # threshold, but our cost analysis only benefits from FoF classification
+            # when underlying positions are material enough to warrant unwinding.
             if total_fund_pct > 25.0:
                 fund.is_fund_of_funds = True
                 node.data_notes.append(

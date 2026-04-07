@@ -5,6 +5,8 @@ pseudonym, update this single file — every module, header, and template
 reads from these values.
 """
 
+import os as _os
+
 # ── Public Identity ──────────────────────────────────────────────────────────
 # Change these when setting up the fresh pseudonym / GitHub / email.
 # Everything else in the codebase references these values.
@@ -32,3 +34,21 @@ EDGAR_RATE_LIMIT_DELAY: float = 0.12  # seconds between requests
 
 # ── Application ──────────────────────────────────────────────────────────────
 APP_VERSION: str = "0.1.0"
+
+# CORS: restrict to same-origin in production.
+# Override via FUNDAUTOPSY_CORS_ORIGINS env var (comma-separated).
+CORS_ALLOWED_ORIGINS: list[str] = [
+    o.strip()
+    for o in _os.environ.get("FUNDAUTOPSY_CORS_ORIGINS", "").split(",")
+    if o.strip()
+] or ["*"]
+
+# Maximum size (bytes) for a single EDGAR XML download.
+# N-PORT filings for mega-trusts can be 30-40 MB; 50 MB is generous.
+MAX_XML_DOWNLOAD_BYTES: int = 50 * 1024 * 1024
+
+# ── Dollar Impact Defaults ──────────────────────────────────────────────────
+# Used by the web API and CLI when user doesn't specify custom values.
+DEFAULT_INVESTMENT: float = 100_000  # $100k
+DEFAULT_HORIZON_YEARS: int = 20
+DEFAULT_ANNUAL_RETURN_PCT: float = 7.0  # 7% nominal

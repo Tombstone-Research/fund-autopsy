@@ -17,11 +17,9 @@ Implementation:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
 
-from fundautopsy.models.filing_data import DataSourceTag, NPortData
 from fundautopsy.models.cost_breakdown import CostRange
-
+from fundautopsy.models.filing_data import DataSourceTag, NPortData
 
 # Baseline cash % that all funds need for operational purposes
 # (redemptions, settlement, margin). Below this, no drag is assigned.
@@ -51,7 +49,7 @@ class CashDragEstimate:
     methodology: str
 
 
-def estimate_cash_drag(nport: NPortData) -> Optional[CostRange]:
+def estimate_cash_drag(nport: NPortData) -> CostRange | None:
     """Estimate cash drag from N-PORT holdings data.
 
     Identifies STIV (short-term investment vehicles) and cash-equivalent

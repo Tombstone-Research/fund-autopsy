@@ -1,7 +1,6 @@
 """Tests for N-PORT filing parser."""
 
-import pytest
-from fundautopsy.data.nport import parse_nport_xml, detect_fund_holdings
+from fundautopsy.data.nport import detect_fund_holdings, parse_nport_xml
 
 
 class TestNPortParser:
@@ -31,8 +30,6 @@ class TestNPortParser:
         # Should have at least one asset category
         assert len(weights) > 0
 
-        # For Growth Fund of America (equity fund), should have equity categories
-        equity_categories = {k for k in weights.keys() if "EQ" in k or k in ("EQ", "EQUITY")}
         # At least some weight should be in equity or similar
         total_weight = sum(weights.values())
         assert total_weight > 0, "Total asset weights should sum to positive amount"

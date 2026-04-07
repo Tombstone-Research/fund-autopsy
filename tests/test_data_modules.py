@@ -1,21 +1,20 @@
 """Tests for data retrieval modules."""
 
-import pytest
-from pathlib import Path
 import tempfile
+from pathlib import Path
 from unittest.mock import Mock, patch
 
-from fundautopsy.data.cache import FilingCache, DEFAULT_CACHE_DIR, NCEN_TTL_DAYS, NPORT_TTL_DAYS
+from fundautopsy.data.cache import DEFAULT_CACHE_DIR, FilingCache
 from fundautopsy.data.edgar import (
-    MutualFundIdentifier,
-    FilingEntry,
-    get_edgar_client,
-    _rate_limit,
-    resolve_ticker,
-    EDGAR_SUBMISSIONS_URL,
     EDGAR_ARCHIVES_URL,
     EDGAR_MF_TICKERS_URL,
+    EDGAR_SUBMISSIONS_URL,
     RATE_LIMIT_DELAY,
+    FilingEntry,
+    MutualFundIdentifier,
+    _rate_limit,
+    get_edgar_client,
+    resolve_ticker,
 )
 
 
@@ -179,61 +178,70 @@ class TestFilingCache:
         with tempfile.TemporaryDirectory() as tmpdir:
             cache_path = Path(tmpdir) / "new_cache"
             assert not cache_path.exists()
-            cache = FilingCache(cache_dir=cache_path)
+            FilingCache(cache_dir=cache_path)
             assert cache_path.exists()
 
-    def test_cache_has_db_path(self):
-        """Cache should have database path."""
+    def test_cache_xml_subdirectory_created(self):
+        """Cache should create xml subdirectory on init."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            cache = FilingCache(cache_dir=Path(tmpdir))
-            assert cache._db_path is not None
-            assert str(cache._db_path).endswith(".duckdb")
+            FilingCache(cache_dir=Path(tmpdir))
+            assert (Path(tmpdir) / "xml").exists()
 
     def test_default_cache_dir_in_home(self):
         """Default cache dir should be in home directory."""
         assert DEFAULT_CACHE_DIR.is_absolute()
         assert ".fundautopsy" in str(DEFAULT_CACHE_DIR)
 
-    def test_ncen_ttl_reasonable(self):
-        """N-CEN TTL should be annual (365 days)."""
-        assert NCEN_TTL_DAYS == 365
-
-    def test_nport_ttl_reasonable(self):
-        """N-PORT TTL should be quarterly (90 days)."""
-        assert NPORT_TTL_DAYS == 90
-
-    def test_nport_ttl_shorter_than_ncen(self):
-        """N-PORT should have shorter TTL than N-CEN."""
-        assert NPORT_TTL_DAYS < NCEN_TTL_DAYS
-
-    def test_cache_clear_removes_db(self):
-        """Cache clear should remove database."""
+    def test_cache_put_and_get_xml(self):
+        """Cache should store and retrieve XML bytes."""
         with tempfile.TemporaryDirectory() as tmpdir:
             cache = FilingCache(cache_dir=Path(tmpdir))
-            # Create a dummy file at db path
-            cache._db_path.parent.mkdir(parents=True, exist_ok=True)
-            cache._db_path.touch()
-            assert cache._db_path.exists()
+            test_data = b"<xml>test filing data</xml>"
+            cache.put_xml(123456, "0001145549-24-069034", "primary_doc.xml", test_data)
+            result = cache.get_xml(123456, "0001145549-24-069034", "primary_doc.xml")
+            assert result == test_data
 
+    def test_cache_miss_returns_none(self):
+        """Cache miss should return None."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache = FilingCache(cache_dir=Path(tmpdir))
+            result = cache.get_xml(999999, "0000000000-00-000000", "missing.xml")
+            assert result is None
+
+    def test_cache_disabled_returns_none(self):
+        """Disabled cache should always return None."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache = FilingCache(cache_dir=Path(tmpdir), enabled=False)
+            cache.put_xml(123456, "0001145549-24-069034", "doc.xml", b"<xml/>")
+            result = cache.get_xml(123456, "0001145549-24-069034", "doc.xml")
+            assert result is None
+
+    def test_cache_clear_removes_files(self):
+        """Cache clear should remove all cached files."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache = FilingCache(cache_dir=Path(tmpdir))
+            cache.put_xml(123456, "0001145549-24-069034", "doc.xml", b"<xml/>")
             cache.clear()
-            # DB file should be removed
-            assert not cache._db_path.exists()
+            result = cache.get_xml(123456, "0001145549-24-069034", "doc.xml")
+            assert result is None
 
 
 class TestResolveTickerFunction:
     """Test ticker resolution (mocked to avoid actual SEC calls)."""
 
+    @patch('fundautopsy.data.edgar._request_with_retry')
     @patch('fundautopsy.data.edgar.get_edgar_client')
-    def test_resolve_ticker_returns_identifier(self, mock_get_client):
+    def test_resolve_ticker_returns_identifier(self, mock_get_client, mock_request):
         """Resolve ticker should return MutualFundIdentifier."""
-        mock_client = Mock()
-        mock_client.get.return_value.json.return_value = {
+        mock_resp = Mock()
+        mock_resp.json.return_value = {
             "fields": ["cik", "seriesId", "classId", "symbol"],
             "data": [
                 [1234567, "S000000001", "C000000001", "VTSAX"]
             ]
         }
-        mock_get_client.return_value = mock_client
+        mock_request.return_value = mock_resp
+        mock_get_client.return_value = Mock()
 
         result = resolve_ticker("VTSAX")
 
@@ -241,47 +249,54 @@ class TestResolveTickerFunction:
         assert result.ticker == "VTSAX"
         assert result.cik == 1234567
 
+    @patch('fundautopsy.data.edgar._request_with_retry')
     @patch('fundautopsy.data.edgar.get_edgar_client')
-    def test_resolve_ticker_case_insensitive(self, mock_get_client):
+    def test_resolve_ticker_case_insensitive(self, mock_get_client, mock_request):
         """Resolve ticker should be case-insensitive."""
-        mock_client = Mock()
-        mock_client.get.return_value.json.return_value = {
+        mock_resp = Mock()
+        mock_resp.json.return_value = {
             "fields": ["cik", "seriesId", "classId", "symbol"],
             "data": [
                 [1234567, "S000000001", "C000000001", "VTSAX"]
             ]
         }
-        mock_get_client.return_value = mock_client
+        mock_request.return_value = mock_resp
+        mock_get_client.return_value = Mock()
 
         result = resolve_ticker("vtsax")
 
         assert result is not None
         assert result.ticker == "VTSAX"
 
+    @patch('fundautopsy.data.edgar._request_with_retry')
     @patch('fundautopsy.data.edgar.get_edgar_client')
-    def test_resolve_ticker_not_found_returns_none(self, mock_get_client):
+    def test_resolve_ticker_not_found_returns_none(self, mock_get_client, mock_request):
         """Resolve ticker should return None if not found."""
-        mock_client = Mock()
-        mock_client.get.return_value.json.return_value = {
+        mock_resp = Mock()
+        mock_resp.json.return_value = {
             "fields": ["cik", "seriesId", "classId", "symbol"],
             "data": []
         }
-        mock_get_client.return_value = mock_client
+        mock_request.return_value = mock_resp
+        mock_get_client.return_value = Mock()
 
         result = resolve_ticker("NOTREAL")
 
         assert result is None
 
+    @patch('fundautopsy.data.edgar._request_with_retry')
     @patch('fundautopsy.data.edgar.get_edgar_client')
-    def test_resolve_ticker_with_provided_client(self, mock_get_client):
+    def test_resolve_ticker_with_provided_client(self, mock_get_client, mock_request):
         """Resolve ticker should use provided client."""
-        mock_client = Mock()
-        mock_client.get.return_value.json.return_value = {
+        mock_resp = Mock()
+        mock_resp.json.return_value = {
             "fields": ["cik", "seriesId", "classId", "symbol"],
             "data": [
                 [1234567, "S000000001", "C000000001", "AGTHX"]
             ]
         }
+        mock_request.return_value = mock_resp
+        mock_client = Mock()
 
         result = resolve_ticker("AGTHX", client=mock_client)
 

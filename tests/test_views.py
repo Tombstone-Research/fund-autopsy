@@ -44,10 +44,10 @@ def test_comparison_view_renders_empty_list():
 
 def test_comparison_view_renders_real_funds():
     """Comparison view should render a Rich table for real FundNode data."""
+    from fundautopsy.models.cost_breakdown import CostBreakdown, CostRange
+    from fundautopsy.models.filing_data import DataSourceTag, TaggedValue
     from fundautopsy.models.fund_metadata import FundMetadata
     from fundautopsy.models.holdings_tree import FundNode
-    from fundautopsy.models.cost_breakdown import CostBreakdown, CostRange
-    from fundautopsy.models.filing_data import DataSourceTag, TaggedValue, NPortData
 
     # Build minimal but real FundNode objects
     def make_node(ticker: str, name: str, er_bps: float, brokerage_bps: float) -> FundNode:
@@ -69,7 +69,6 @@ def test_comparison_view_renders_real_funds():
     fund_b = make_node("BBBB", "Fund B", 80.0, 8.0)
 
     from rich.console import Console
-    from io import StringIO
     buf = StringIO()
     console = Console(file=buf, width=120)
 

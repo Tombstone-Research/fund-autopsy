@@ -1,18 +1,17 @@
 """Tests for configuration module."""
 
-import pytest
 
 from fundautopsy.config import (
-    ORG_NAME,
-    ORG_TAGLINE,
-    PROJECT_NAME,
+    APP_VERSION,
     CONTACT_EMAIL,
+    EDGAR_RATE_LIMIT_DELAY,
+    EDGAR_USER_AGENT,
     GITHUB_ORG,
     GITHUB_REPO,
     GITHUB_URL,
-    EDGAR_USER_AGENT,
-    EDGAR_RATE_LIMIT_DELAY,
-    APP_VERSION,
+    ORG_NAME,
+    ORG_TAGLINE,
+    PROJECT_NAME,
 )
 
 

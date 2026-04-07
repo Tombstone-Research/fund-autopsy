@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date
-from typing import Optional
 
 
 @dataclass
@@ -17,10 +16,10 @@ class FundMetadata:
     series_id: str
     class_id: str
     fund_family: str
-    fiscal_year_end: Optional[date] = None
-    total_net_assets: Optional[float] = None
-    inception_date: Optional[date] = None
-    category: Optional[str] = None
+    fiscal_year_end: date | None = None
+    total_net_assets: float | None = None
+    inception_date: date | None = None
+    category: str | None = None
     is_fund_of_funds: bool = False
 
     @property

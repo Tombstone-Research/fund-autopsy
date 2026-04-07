@@ -1,10 +1,9 @@
 """Tests for bid-ask spread estimation."""
 
-import pytest
 from datetime import date
 
 from fundautopsy.estimates.spread import estimate_bid_ask_spread
-from fundautopsy.models.filing_data import NPortData, NPortHolding, DataSourceTag
+from fundautopsy.models.filing_data import DataSourceTag, NPortData, NPortHolding
 
 
 class TestBidAskSpreadEstimation:
@@ -260,8 +259,8 @@ class TestBidAskSpreadEstimation:
         assert "turnover" in result.methodology.lower()
         assert "spread" in result.methodology.lower()
 
-    def test_empty_holdings_produces_zero(self):
-        """Portfolio with no holdings should produce zero spread."""
+    def test_empty_holdings_returns_none(self):
+        """Portfolio with no holdings should return None (no data, not zero cost)."""
         nport = NPortData(
             filing_date=date(2025, 3, 15),
             reporting_period_end=date(2024, 12, 31),
@@ -271,9 +270,8 @@ class TestBidAskSpreadEstimation:
         )
         result = estimate_bid_ask_spread(nport, turnover_rate=0.30)
 
-        # Empty portfolio means no spread cost
-        assert result.low_bps == 0.0
-        assert result.high_bps == 0.0
+        # Empty portfolio means we can't estimate — should signal missing, not zero
+        assert result is None
 
     def test_emerging_market_equity_wider_than_us(self):
         """Emerging market equity should have wider spreads than US equity."""

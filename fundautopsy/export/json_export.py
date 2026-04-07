@@ -9,10 +9,10 @@ from __future__ import annotations
 import json
 from datetime import date
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
-from fundautopsy.models.holdings_tree import FundNode
 from fundautopsy.models.filing_data import DataSourceTag
+from fundautopsy.models.holdings_tree import FundNode
 
 
 def _tag_label(tag: DataSourceTag) -> str:
@@ -94,7 +94,9 @@ def _serialize_node(node: FundNode) -> dict[str, Any]:
                     cb.soft_dollar_commissions_bps.is_available
                     and cb.soft_dollar_commissions_bps.value > 0
                 ),
-                "value_bps": cb.soft_dollar_commissions_bps.value if cb.soft_dollar_commissions_bps.is_available else None,
+                "value_bps": (
+                    cb.soft_dollar_commissions_bps.value if cb.soft_dollar_commissions_bps.is_available else None
+                ),
                 "tag": _tag_label(tag),
             }
 

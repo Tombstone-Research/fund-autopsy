@@ -1,9 +1,9 @@
 """Tests for fund-of-funds detection logic."""
 
-import pytest
+from datetime import date
+
 from fundautopsy.data.nport import detect_fund_holdings
 from fundautopsy.models.filing_data import NPortData, NPortHolding
-from datetime import date
 
 
 class TestFundDetection:

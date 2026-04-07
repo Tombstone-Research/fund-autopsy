@@ -7,14 +7,14 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 from fundautopsy.export.html_export import (
-    export_html,
     _extract_report_data,
     _format_dollars,
     _format_dollars_full,
     _render_html,
+    export_html,
 )
-from fundautopsy.models.filing_data import DataSourceTag, TaggedValue
 from fundautopsy.models.cost_breakdown import CostBreakdown, CostRange
+from fundautopsy.models.filing_data import DataSourceTag, TaggedValue
 from fundautopsy.models.fund_metadata import FundMetadata
 
 

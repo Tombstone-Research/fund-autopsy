@@ -3,16 +3,16 @@
 import pytest
 
 from fundautopsy.estimates.assumptions import (
-    SpreadAssumption,
-    ImpactAssumption,
-    SPREAD_ASSUMPTIONS,
-    IMPACT_ASSUMPTIONS,
     BOND_IMPACT_ASSUMPTIONS,
-    NPORT_ASSET_CAT_MAP,
-    DEFAULT_SPREAD,
-    INDUSTRY_AVG_SOFT_DOLLAR_SHARE,
-    TURNOVER_LOW_HIGH_THRESHOLD,
     BOND_TURNOVER_LOW_HIGH_THRESHOLD,
+    DEFAULT_SPREAD,
+    IMPACT_ASSUMPTIONS,
+    INDUSTRY_AVG_SOFT_DOLLAR_SHARE,
+    NPORT_ASSET_CAT_MAP,
+    SPREAD_ASSUMPTIONS,
+    TURNOVER_LOW_HIGH_THRESHOLD,
+    ImpactAssumption,
+    SpreadAssumption,
 )
 
 

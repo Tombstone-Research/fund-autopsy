@@ -14,10 +14,13 @@ Strategy:
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Optional
 
 import edgar
+
+logger = logging.getLogger(__name__)
 
 from fundautopsy.data.fee_parser import find_filing_for_ticker, parse_497k_html
 
@@ -131,11 +134,22 @@ def retrieve_prospectus_fees(
         if not parsed.has_data:
             return None
 
-        # Compute total from components if not directly available
+        # Compute total from components if not directly available.
+        # Only sum components when all major fields are present to avoid
+        # understating the total if a component was missed during parsing.
         total = parsed.total_annual_expenses
         if total is None and parsed.management_fee is not None:
-            total = (parsed.management_fee or 0) + (parsed.twelve_b1_fee or 0) + (parsed.other_expenses or 0)
-            total = round(total, 2)
+            # At minimum, management fee + 12b-1 + other expenses should all be present
+            # for a reliable synthetic total. If any are missing, just use management fee alone.
+            if parsed.twelve_b1_fee is not None and parsed.other_expenses is not None:
+                total = parsed.management_fee + parsed.twelve_b1_fee + parsed.other_expenses
+                total = round(total, 2)
+            else:
+                logger.debug(
+                    "Skipping synthetic total for %s: incomplete fee components "
+                    "(mgmt=%.2f, 12b1=%s, other=%s)",
+                    ticker, parsed.management_fee, parsed.twelve_b1_fee, parsed.other_expenses,
+                )
 
         return ProspectusFees(
             ticker=ticker.upper(),
@@ -151,8 +165,9 @@ def retrieve_prospectus_fees(
             portfolio_turnover=parsed.portfolio_turnover,
         )
 
-    except Exception:
+    except Exception as exc:
         # Prospectus parsing is best-effort — don't crash the pipeline
+        logger.warning("Prospectus retrieval failed for %s: %s", ticker, exc)
         return None
 
 
@@ -202,7 +217,8 @@ def _try_edgartools_parser(
             redemption_fee=_to_float(target_class.redemption_fee),
             portfolio_turnover=_to_float(prospectus.portfolio_turnover),
         )
-    except Exception:
+    except Exception as exc:
+        logger.debug("edgartools 497K parser failed for %s: %s", ticker, exc)
         return None
 
 
