@@ -191,18 +191,38 @@ def _compute_single_fund_costs(node: FundNode) -> CostBreakdown:
         )
 
     # --- Tax drag (taxable accounts only) ---
-    # Determine if this is an equity or bond fund from asset mix
-    is_equity = True
-    if nport and nport.holdings:
-        pct_bond = _pct_bond_from_nport(nport)
-        is_equity = pct_bond < 50.0
+    # ETFs use in-kind creation/redemption to avoid distributing capital gains,
+    # so turnover-based tax drag estimates don't apply.  Detect ETF status from
+    # ticker length (mutual funds are 5 chars, ETFs are 1-4) or fund name.
+    ticker = node.metadata.ticker or ""
+    fund_name_upper = (node.metadata.name or "").upper()
+    is_etf = len(ticker) <= 4 or "ETF" in fund_name_upper
 
-    tax_estimate = estimate_tax_drag(
-        turnover_rate_pct=turnover_rate * 100.0,
-        is_equity=is_equity,
-    )
-    if tax_estimate.estimated_tax_drag_high_bps > 0:
-        breakdown.tax_drag_cost = tax_estimate.as_cost_range()
+    if is_etf:
+        breakdown.tax_drag_cost = CostRange(
+            low_bps=0,
+            high_bps=0,
+            tag=DataSourceTag.CALCULATED,
+            methodology=(
+                "ETF structure detected. ETFs use in-kind creation/redemption to "
+                "avoid distributing capital gains, making turnover-based tax drag "
+                "estimates inapplicable. Historical capital gains distributions for "
+                "this ETF are near zero."
+            ),
+        )
+    else:
+        # Determine if this is an equity or bond fund from asset mix
+        is_equity = True
+        if nport and nport.holdings:
+            pct_bond = _pct_bond_from_nport(nport)
+            is_equity = pct_bond < 50.0
+
+        tax_estimate = estimate_tax_drag(
+            turnover_rate_pct=turnover_rate * 100.0,
+            is_equity=is_equity,
+        )
+        if tax_estimate.estimated_tax_drag_high_bps > 0:
+            breakdown.tax_drag_cost = tax_estimate.as_cost_range()
 
     return breakdown
 
