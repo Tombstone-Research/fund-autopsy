@@ -8,8 +8,11 @@ from __future__ import annotations
 
 import logging
 
+from fundautopsy.estimates.assumptions import INDUSTRY_AVG_SOFT_DOLLAR_SHARE
+from fundautopsy.estimates.cash_drag import estimate_cash_drag
 from fundautopsy.estimates.impact import estimate_market_impact_regression
 from fundautopsy.estimates.spread import estimate_bid_ask_spread
+from fundautopsy.estimates.tax_drag import estimate_tax_drag
 from fundautopsy.models.cost_breakdown import CostBreakdown, CostRange
 from fundautopsy.models.filing_data import DataSourceTag, NPortData, TaggedValue
 from fundautopsy.models.holdings_tree import FundNode
@@ -103,14 +106,45 @@ def _compute_single_fund_costs(node: FundNode) -> CostBreakdown:
                     ) if ncen.has_soft_dollar_arrangements else None,
                 )
         elif ncen.has_soft_dollar_arrangements:
-            breakdown.soft_dollar_commissions_bps = TaggedValue(
-                value=None,
-                tag=DataSourceTag.NOT_DISCLOSED,
-                note=(
-                    "Fund reports soft dollar arrangements but N-CEN XML "
-                    "does not separate the dollar amount. Cross-reference SAI."
-                ),
-            )
+            # Estimate soft dollar cost as a share of total brokerage commissions.
+            # Erzurumlu & Kotomin (2016) find the industry average is ~45%.
+            # We use a range: 30% (conservative) to 45% (industry average).
+            if (
+                ncen.total_brokerage_commissions
+                and ncen.total_brokerage_commissions.is_available
+                and net_assets
+                and net_assets > 0
+            ):
+                comm_total = ncen.total_brokerage_commissions.value
+                sd_low_dollars = comm_total * 0.30
+                sd_high_dollars = comm_total * INDUSTRY_AVG_SOFT_DOLLAR_SHARE
+                sd_low_bps = (sd_low_dollars / net_assets) * 10_000
+                sd_high_bps = (sd_high_dollars / net_assets) * 10_000
+                breakdown.soft_dollar_commissions_bps = TaggedValue(
+                    value=round(sd_high_bps, 2),
+                    tag=DataSourceTag.ESTIMATED,
+                    note=(
+                        f"Estimated 30–45% of ${comm_total:,.0f} brokerage commissions "
+                        f"(${sd_low_dollars:,.0f}–${sd_high_dollars:,.0f}). "
+                        "Based on Erzurumlu & Kotomin (2016) industry average. "
+                        "Fund discloses soft dollar arrangements but not the dollar amount."
+                    ),
+                )
+                breakdown.soft_dollar_commissions_low_bps = round(sd_low_bps, 2)
+                breakdown.soft_dollar_share_pct = TaggedValue(
+                    value=INDUSTRY_AVG_SOFT_DOLLAR_SHARE * 100,
+                    tag=DataSourceTag.ESTIMATED,
+                    note="Industry average from Erzurumlu & Kotomin (2016)",
+                )
+            else:
+                breakdown.soft_dollar_commissions_bps = TaggedValue(
+                    value=None,
+                    tag=DataSourceTag.NOT_DISCLOSED,
+                    note=(
+                        "Fund reports soft dollar arrangements but commission "
+                        "data unavailable for estimation."
+                    ),
+                )
 
     # --- Turnover rate ---
     # Priority: 497K prospectus > N-CEN > default assumption
@@ -138,6 +172,11 @@ def _compute_single_fund_costs(node: FundNode) -> CostBreakdown:
                 pct_small_cap=pct_small_cap,
                 pct_bond=pct_bond,
             )
+        # Cash drag — excess cash above operational baseline
+        cash_drag = estimate_cash_drag(nport)
+        if cash_drag and cash_drag.tag != DataSourceTag.UNAVAILABLE:
+            breakdown.cash_drag_cost = cash_drag
+
     else:
         # No N-PORT — can't estimate spread or impact
         breakdown.bid_ask_spread_cost = CostRange(
@@ -150,6 +189,20 @@ def _compute_single_fund_costs(node: FundNode) -> CostBreakdown:
             tag=DataSourceTag.UNAVAILABLE,
             methodology="N-PORT data unavailable — cannot estimate market impact.",
         )
+
+    # --- Tax drag (taxable accounts only) ---
+    # Determine if this is an equity or bond fund from asset mix
+    is_equity = True
+    if nport and nport.holdings:
+        pct_bond = _pct_bond_from_nport(nport)
+        is_equity = pct_bond < 50.0
+
+    tax_estimate = estimate_tax_drag(
+        turnover_rate_pct=turnover_rate * 100.0,
+        is_equity=is_equity,
+    )
+    if tax_estimate.estimated_tax_drag_high_bps > 0:
+        breakdown.tax_drag_cost = tax_estimate.as_cost_range()
 
     return breakdown
 

@@ -353,16 +353,35 @@ def analyze_fund(ticker: str):
             ))
 
         # Soft dollars
-        if (
-            cb.soft_dollar_commissions_bps
-            and cb.soft_dollar_commissions_bps.tag == DataSourceTag.NOT_DISCLOSED
-        ):
-            costs.append(CostComponent(
-                label="Soft Dollar Arrangements",
-                value="ACTIVE",
-                tag="warning",
-                note="Fund uses client commissions to pay for research. Dollar amount not disclosed.",
-            ))
+        if cb.soft_dollar_commissions_bps:
+            sd = cb.soft_dollar_commissions_bps
+            if sd.tag == DataSourceTag.ESTIMATED and sd.value is not None:
+                sd_low = cb.soft_dollar_commissions_low_bps or 0
+                sd_high = sd.value
+                costs.append(CostComponent(
+                    label="Soft Dollar Cost",
+                    value=f"{sd_low:.1f} – {sd_high:.1f}",
+                    low=sd_low,
+                    high=sd_high,
+                    tag="estimated",
+                    note=sd.note,
+                ))
+            elif sd.tag == DataSourceTag.CALCULATED and sd.value is not None:
+                costs.append(CostComponent(
+                    label="Soft Dollar Commissions",
+                    value=f"{sd.value:.1f}",
+                    low=sd.value,
+                    high=sd.value,
+                    tag="reported",
+                    note=sd.note,
+                ))
+            elif sd.tag == DataSourceTag.NOT_DISCLOSED:
+                costs.append(CostComponent(
+                    label="Soft Dollar Arrangements",
+                    value="ACTIVE",
+                    tag="warning",
+                    note="Fund uses client commissions to pay for research. Dollar amount not disclosed.",
+                ))
 
         # Spread
         if cb.bid_ask_spread_cost and cb.bid_ask_spread_cost.tag != DataSourceTag.UNAVAILABLE:
@@ -382,6 +401,28 @@ def analyze_fund(ticker: str):
                 low=cb.market_impact_cost.low_bps,
                 high=cb.market_impact_cost.high_bps,
                 tag="estimated",
+            ))
+
+        # Cash drag
+        if cb.cash_drag_cost and cb.cash_drag_cost.tag != DataSourceTag.UNAVAILABLE and cb.cash_drag_cost.high_bps > 0:
+            costs.append(CostComponent(
+                label="Cash Drag",
+                value=f"{cb.cash_drag_cost.low_bps:.1f} – {cb.cash_drag_cost.high_bps:.1f}",
+                low=cb.cash_drag_cost.low_bps,
+                high=cb.cash_drag_cost.high_bps,
+                tag="estimated",
+                note=cb.cash_drag_cost.methodology,
+            ))
+
+        # Tax drag (taxable accounts only)
+        if cb.tax_drag_cost and cb.tax_drag_cost.tag != DataSourceTag.UNAVAILABLE and cb.tax_drag_cost.high_bps > 0:
+            costs.append(CostComponent(
+                label="Tax Drag (Taxable Accounts)",
+                value=f"{cb.tax_drag_cost.low_bps:.1f} – {cb.tax_drag_cost.high_bps:.1f}",
+                low=cb.tax_drag_cost.low_bps,
+                high=cb.tax_drag_cost.high_bps,
+                tag="estimated",
+                note=cb.tax_drag_cost.methodology,
             ))
 
     # Totals

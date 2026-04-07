@@ -47,12 +47,15 @@ class CostBreakdown:
 
     # N-CEN derived
     brokerage_commissions_bps: TaggedValue | None = None  # C.6.a / net assets
-    soft_dollar_commissions_bps: TaggedValue | None = None  # C.6.b / net assets
+    soft_dollar_commissions_bps: TaggedValue | None = None  # C.6.b / net assets (high estimate)
+    soft_dollar_commissions_low_bps: float | None = None  # Low estimate when range-based
     soft_dollar_share_pct: TaggedValue | None = None  # C.6.b / C.6.a
 
     # Estimated costs
     bid_ask_spread_cost: CostRange | None = None
     market_impact_cost: CostRange | None = None
+    cash_drag_cost: CostRange | None = None
+    tax_drag_cost: CostRange | None = None  # Taxable accounts only
 
     # Composite
     @property
