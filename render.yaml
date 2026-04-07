@@ -3,7 +3,7 @@ services:
     name: fund-autopsy
     runtime: docker
     plan: free
-    healthCheckPath: /
+    healthCheckPath: /health
     envVars:
       - key: EDGAR_IDENTITY
         value: "Fund Autopsy fundautopsy@tombstoneresearch.com"
