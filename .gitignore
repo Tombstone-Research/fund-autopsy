@@ -73,3 +73,6 @@ content/
 # Local data and generated artifacts (root-level only, not fundautopsy/data/)
 /data/
 .coverage*
+
+# Mypy cache
+.mypy_cache/
