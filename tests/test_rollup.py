@@ -129,8 +129,18 @@ class TestRollup:
 
         # Wrapper should still have its own cost breakdown
         assert result.cost_breakdown is not None
-        # Should add a data note about fund-of-funds
-        assert any("fund-of-funds" in note.lower() for note in result.data_notes)
+        # Rolled-up weighted underlying cost: 0.6 * 40 + 0.4 * 60 = 48 bps
+        assert result.cost_breakdown.underlying_funds_weighted_bps is not None
+        assert result.cost_breakdown.underlying_funds_weighted_bps.value == 48.0
+        # Wrapper's total reported cost now includes the underlying rollup:
+        # wrapper direct (25) + weighted underlying (48) = 73 bps
+        assert result.cost_breakdown.total_reported_bps == 73.0
+        # Should add a data note summarizing the rollup
+        assert any(
+            "weighted underlying cost" in note.lower()
+            or "rolled up" in note.lower()
+            for note in result.data_notes
+        )
 
     def test_wrapper_direct_costs_added(self):
         """Wrapper fund's own trading costs are added on top of rolled-up child costs."""

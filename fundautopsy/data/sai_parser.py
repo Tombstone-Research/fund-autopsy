@@ -121,12 +121,14 @@ def _extract_dollars(text: str) -> list[tuple[str, float]]:
 
 # ── EDGAR filing access ───────────────────────────────────────────────────────
 
+from fundautopsy.config import EDGAR_USER_AGENT, EDGAR_RATE_LIMIT_DELAY
+
 _EDGAR_HEADERS = {
-    "User-Agent": "FundAutopsy fundautopsy@tombstoneresearch.com",
+    "User-Agent": EDGAR_USER_AGENT,
     "Accept-Encoding": "gzip, deflate",
 }
 
-_RATE_LIMIT_DELAY = 0.12  # SEC rate limit: 10 req/sec
+_RATE_LIMIT_DELAY = EDGAR_RATE_LIMIT_DELAY  # SEC rate limit: 10 req/sec
 
 
 def _fetch_edgar(url: str) -> requests.Response:

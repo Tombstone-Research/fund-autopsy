@@ -47,22 +47,31 @@ Type any mutual fund ticker. Fund Autopsy pulls live data from SEC EDGAR and sho
 
 ## Data Sources
 
-Fund Autopsy currently parses three filing types, with more in development:
+Fund Autopsy parses six filing types today, with more in development:
 
 | Filing | What It Provides | Frequency |
 |--------|-----------------|-----------|
 | **N-CEN** | Brokerage commissions, soft dollar arrangements, affiliated broker usage, securities lending revenue, service providers | Annual |
 | **N-PORT** | Complete portfolio holdings, asset class breakdown, net assets, liquidity classification | Quarterly |
 | **497K** | Expense ratio, management fee, 12b-1 fee, other expenses, turnover rate | Per share class |
+| **485BPOS** | Statutory prospectus with structured XBRL fee facts, used as fallback when the 497K summary prospectus is incomplete or unavailable | Per share class |
+| **SAI** | Broker-specific commission breakdowns, PM compensation structures, soft dollar detail | Annual |
+| **N-CSR** | Realized commissions with multi-year history, board advisory contract approval basis | Semiannual |
+
+### Coverage
+
+Measured coverage against a 68-ticker stratified stress set covering
+indexed equity (18), active equity (22), active bond (6), target-date
+across five sponsors (19), sector, international, boutique active, and
+a fund-of-funds wrapper: **68/68 PASS** with zero exceptions, zero
+partial-data, and zero null returns. Median 5.4 seconds per ticker;
+p95 34.9 seconds.
 
 ### Roadmap: Additional Filings
 
 | Filing | What It Will Unlock | Status |
 |--------|-------------------|--------|
-| **SAI** (Statement of Additional Information) | Broker-specific commission breakdowns, PM compensation structures, revenue sharing arrangements, commission recapture programs | Planned |
-| **N-CSR** (Shareholder Reports) | Realized commissions with multi-year history, board advisory contract approval basis | Planned |
 | **Form CRS** | Distribution conflicts, pay-for-shelf-space arrangements (FINRA, not EDGAR) | Planned |
-| **485A/B/C** (Prospectus Amendments) | Fee change tracking over time | Planned |
 | **N-PX** | Proxy voting records, governance conflict detection | Planned |
 | **Form ADV** | Investment adviser conflicts, disciplinary history (IAPD database) | Planned |
 | **Form N-14** | Fund merger fee impact analysis | Planned |
@@ -76,7 +85,7 @@ All data retrieved live from SEC EDGAR. No proprietary data, no scraping, no thi
 3. **Compute** — Brokerage commissions from N-CEN (actual dollars), bid-ask spreads and market impact estimated from N-PORT asset mix and turnover rate
 4. **Present** — Stated expense ratio alongside true total cost range, with every component tagged by source filing
 
-Multi-series trusts (Fidelity, Vanguard, etc.) are handled by iterating through filings to match the correct series rather than assuming the most recent filing belongs to your fund. Custom HTML parsers handle the three most common 497K table formats across fund families.
+Multi-series trusts (Fidelity, Vanguard, JPMorgan, Capital Group, etc.) are handled through a three-layer resolution pipeline. First, EDGAR's mutual fund ticker master is queried; tickers that resolve there (Vanguard, T. Rowe Price, Dodge & Cox, Dimensional, and others) produce a direct series hit. Second, when a ticker is a share class buried inside an umbrella trust whose master entry indexes only the trust CIK (FXAIX under Fidelity Concord Street, OAKMX under Harris Associates Investment Trust, JTSAX under JPMorgan Trust I, and similar cases), a full-text-search walker locates the registrant trust and scans recent 485BPOS and 497K headers for the matching `<CLASS-CONTRACT-TICKER-SYMBOL>`. Third, when a resolved filing's 497K summary prospectus cannot be mechanically parsed — sticker supplements, multi-class column misattribution, or genuinely absent tables — the pipeline falls back to the statutory 485BPOS prospectus and extracts fee facts from its XBRL instance document, covering both the `oef:` (Open-ended Fund) and `rr:` (Risk/Return) taxonomies that registrants use to tag the same seven fee concepts.
 
 ## The Sub-NAV Drag Framework
 
@@ -127,19 +136,16 @@ Or deploy to Render using the included `render.yaml`.
 1. N-CEN data starts in 2018. No structured soft dollar data before that.
 2. N-CEN is filed annually. Commission data may be up to 12 months old.
 3. Bid-ask spread and market impact are model estimates, not observed execution costs.
-4. SAI, N-CSR, Form CRS, and Form ADV parsers are not yet implemented. Current analysis is limited to N-CEN, N-PORT, and 497K data.
-5. Tax drag is excluded from current scope.
-6. Fund-of-funds (target-date funds) do not recursively unwind underlying fund costs.
+4. Form CRS and Form ADV parsers are not yet implemented. Distribution-side conflicts and adviser-level disclosures are a future addition.
+5. Fund-of-funds recursive unwinding resolves children that edgartools can map to a share class. Institutional-only underlying funds that share a wrapper's trust CIK (typical in target-date fund families that run their own underlying portfolios) sometimes fail the ticker-to-class resolution step; those children appear as unresolved weight rather than being silently zeroed.
+6. Dormant-disclosure edge case: post-target-date target-date funds (e.g., Nationwide Destination 2010) stop filing per-class summary prospectuses once past their target year and cannot be parsed through any of the three resolution paths. These return None cleanly rather than wrong data.
 
 ## Contributing
 
 Contributions welcome. The mission is to parse every public filing a fund is required to submit and surface what the industry buries. Priority areas:
 
-- SAI parser for brokerage commission detail, PM compensation, and revenue sharing
-- N-CSR parser for realized commission history and turnover
 - Asset-class spread assumption refinement with empirical data
-- Fund-of-funds recursive unwinding (target-date funds)
-- Tax drag calculation from after-tax return disclosures
+- Improving fund-of-funds recursive unwinding for institutional-only underlying funds whose share classes are not indexed in the SEC ticker master
 - Form ADV integration (IAPD database, separate from EDGAR)
 - Validation across additional fund families
 

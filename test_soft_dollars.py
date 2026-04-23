@@ -3,7 +3,7 @@
 Test script to analyze 10 common mutual funds for soft dollar costs.
 
 Run with:
-    export EDGAR_IDENTITY="Fund Autopsy fundautopsy@tombstoneresearch.com"
+    export EDGAR_IDENTITY="Fund Autopsy tombstoneresearch@proton.me"
     python test_soft_dollars.py
 """
 
@@ -14,7 +14,7 @@ from typing import Optional
 
 # Set EDGAR identity before imports
 if "EDGAR_IDENTITY" not in os.environ:
-    os.environ["EDGAR_IDENTITY"] = "Fund Autopsy fundautopsy@tombstoneresearch.com"
+    os.environ["EDGAR_IDENTITY"] = "Fund Autopsy tombstoneresearch@proton.me"
 
 # Set up logging
 logging.basicConfig(

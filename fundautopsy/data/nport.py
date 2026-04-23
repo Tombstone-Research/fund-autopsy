@@ -29,6 +29,7 @@ from fundautopsy.data.edgar import (
     MutualFundIdentifier,
     get_edgar_client,
     get_filings,
+    get_filings_for_series,
     download_filing_xml,
 )
 
@@ -54,12 +55,38 @@ def retrieve_nport(
     """
     client = get_edgar_client()
     try:
-        # Multi-series trusts file separate N-PORTs per series.
-        # We may need to check several filings to find the one
-        # matching our target series ID.
-        # Large trusts (e.g. Fidelity Concord Street Trust) can have 25+
-        # series, each filing separate N-PORTs. We need enough to find ours.
-        filings = get_filings(fund_id.cik, "NPORT-P", client=client, count=50)
+        # Multi-series trusts file separate N-PORTs per series. Umbrella
+        # trusts (iShares Trust ~1,400 NPORT-Ps, Fidelity Concord Street
+        # ~25 series, PIMCO Funds ~thousands) routinely bury a given
+        # series' filing beyond the first 50 entries on the trust-level
+        # feed, so we must filter by series id up front when we can.
+        #
+        # Path 1 — series-filtered browse-edgar query. This is the only
+        # path that works reliably for ETF-of-ETFs like AOR whose N-PORT
+        # is filed hundreds of entries deep on the trust feed.
+        filings: list = []
+        if fund_id.series_id:
+            try:
+                filings = get_filings_for_series(
+                    cik=fund_id.cik,
+                    series_id=fund_id.series_id,
+                    form_type="NPORT-P",
+                    client=client,
+                    count=40,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Series-filtered NPORT-P lookup failed for %s/%s: %s",
+                    fund_id.ticker, fund_id.series_id, exc,
+                )
+                filings = []
+
+        # Path 2 — trust-level fallback. Kept so that series-id-less
+        # funds and any edge case where browse-edgar's HTML shape
+        # changes still resolve via the submissions API.
+        if not filings:
+            filings = get_filings(fund_id.cik, "NPORT-P", client=client, count=50)
+
         if not filings:
             return None
 

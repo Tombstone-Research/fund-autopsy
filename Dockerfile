@@ -15,7 +15,7 @@ COPY fundautopsy/ ./fundautopsy/
 RUN pip install --no-cache-dir ".[web]"
 
 # SEC EDGAR requires a User-Agent header with contact info
-ENV EDGAR_IDENTITY="FundAutopsy fundautopsy@tombstoneresearch.com"
+ENV EDGAR_IDENTITY="FundAutopsy tombstoneresearch@proton.me"
 
 EXPOSE 8000
 

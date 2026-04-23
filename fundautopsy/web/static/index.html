@@ -208,6 +208,14 @@
             <div class="panel-header">Asset Allocation</div>
             <div id="assetBars" style="padding:12px 0"></div>
           </div>
+          <div class="panel sidebar-section" id="underlyingFundsPanel" style="display:none; margin-top:20px">
+            <div class="panel-header">Fund-of-Funds Composition</div>
+            <div class="underlying-subtitle">Underlying registered funds held by this portfolio (% of net assets)</div>
+            <div class="underlying-pie-wrap">
+              <svg id="underlyingPie" viewBox="-110 -110 220 220" role="img" aria-label="Underlying fund composition pie chart"></svg>
+            </div>
+            <div id="underlyingLegend" class="underlying-legend"></div>
+          </div>
           <div class="panel sidebar-section" id="notesPanel" style="display:none">
             <div class="panel-header">Data Notes</div>
             <div class="notes" id="notesContent"></div>
@@ -359,9 +367,9 @@
           building parsers for every filing the SEC requires &mdash; because the data was always there. Nobody had stitched it together.
         </div>
         <div class="about-text">
-          This project was built entirely with AI. Every parser, every data pipeline, every piece of research was developed
-          in collaboration between a financial planning professional and Claude. The tool exists because AI made it possible
-          to read, parse, and connect regulatory filings at a scale that would have taken a team of analysts months to accomplish manually.
+          This project was built with AI. Every parser, every data pipeline, every piece of research was developed in
+          collaboration with Claude. The tool exists because AI made it possible to read, parse, and connect regulatory
+          filings at a scale that would have taken a team of analysts months to accomplish manually.
         </div>
       </div>
 
@@ -370,7 +378,10 @@
         <ul class="about-list">
           <li><strong>Form N-CEN:</strong> Annual operating information including brokerage commissions, soft dollar arrangements, securities lending, and service provider details.</li>
           <li><strong>Form N-PORT:</strong> Monthly portfolio holdings (publicly disclosed with a 60-day lag), used to estimate bid-ask spreads and market impact by asset class.</li>
-          <li><strong>Form 497K:</strong> Prospectus and expense ratio data.</li>
+          <li><strong>Form 497K:</strong> Summary prospectus per share class. Primary source for expense ratio, management fee, 12b-1 fee, and turnover.</li>
+          <li><strong>Form 485BPOS:</strong> Statutory prospectus with structured XBRL fee facts. Used as a fallback when the 497K summary is incomplete or absent.</li>
+          <li><strong>SAI (Statement of Additional Information):</strong> Broker-specific commission breakdowns, portfolio manager compensation structures, and soft dollar arrangements.</li>
+          <li><strong>Form N-CSR:</strong> Shareholder reports with realized commission history, turnover, and board advisory contract approval basis.</li>
           <li><strong>SEC EDGAR:</strong> All filings retrieved from the public EDGAR database.</li>
         </ul>
       </div>

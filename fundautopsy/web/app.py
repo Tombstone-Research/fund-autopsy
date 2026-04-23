@@ -43,7 +43,12 @@ if os.path.isdir(_static_dir):
 
 
 class CostComponent(BaseModel):
-    """A single cost component in the fund's cost breakdown."""
+    """A single cost component in the fund's cost breakdown.
+
+    applies_to distinguishes costs that drag ANY account ("all") from
+    costs that only apply in a taxable brokerage account ("taxable_only").
+    Tax drag is taxable-only; everything else is all-accounts.
+    """
 
     label: str
     value: Optional[str]
@@ -51,6 +56,7 @@ class CostComponent(BaseModel):
     high: Optional[float] = None
     tag: str
     note: Optional[str] = None
+    applies_to: str = "all"  # "all" or "taxable_only"
 
 
 class FeeComponent(BaseModel):
@@ -68,6 +74,28 @@ class AssetMix(BaseModel):
     label: str
     color: str
     pct: float
+
+
+class UnderlyingFund(BaseModel):
+    """A single underlying fund holding inside a fund-of-funds.
+
+    Populated for target-date, balanced-allocation, and ETF-of-ETFs
+    wrappers. The frontend renders these as a composition pie so
+    investors can see the funds hidden behind their one ticker.
+    The `resolved_*` fields indicate whether we were able to walk
+    into that holding's own filings for recursive cost unwinding;
+    they remain null when the holding name or CUSIP hasn't been
+    resolved to a SEC identifier (which is the common case for
+    iShares and BlackRock ETFs today).
+    """
+
+    name: str
+    pct_of_net_assets: float
+    cusip: Optional[str] = None
+    isin: Optional[str] = None
+    color: str
+    resolved_ticker: Optional[str] = None
+    resolved_cik: Optional[str] = None
 
 
 class BrokerInfo(BaseModel):
@@ -137,14 +165,26 @@ class FundAnalysis(BaseModel):
 
     # Hidden costs
     costs: List[CostComponent]
+    # total_hidden is the "applies to ANY account" rollup — bid-ask, impact,
+    # commissions, soft dollars, cash drag. This is the headline hidden-cost
+    # number and is what true_cost_low/high_bps uses.
     total_hidden_low: Optional[float]
     total_hidden_high: Optional[float]
 
-    # True total cost = ER + hidden
+    # Separate tax drag bucket. Only applies to taxable brokerage accounts;
+    # in IRAs, 401(k)s, and other tax-deferred accounts this is zero.
+    total_tax_low: Optional[float] = None
+    total_tax_high: Optional[float] = None
+
+    # True total cost = ER + hidden (tax-deferred view, default headline)
     true_cost_low_bps: Optional[float] = None
     true_cost_high_bps: Optional[float] = None
     true_cost_low_pct: Optional[float] = None
     true_cost_high_pct: Optional[float] = None
+
+    # True total cost in a TAXABLE account = ER + hidden + tax drag
+    true_cost_taxable_low_bps: Optional[float] = None
+    true_cost_taxable_high_bps: Optional[float] = None
 
     # Dollar impact
     dollar_impact: Optional[DollarImpact] = None
@@ -157,6 +197,11 @@ class FundAnalysis(BaseModel):
     aggregate_commission_dollars: Optional[float] = None
 
     asset_mix: List[AssetMix]
+    # Underlying fund composition — populated for fund-of-funds
+    # (target-date, allocation, ETF-of-ETFs). Empty for direct-holding
+    # funds. The frontend renders these as a pie chart so investors
+    # see the 4-9 funds hidden behind one ticker.
+    underlying_funds: List[UnderlyingFund] = []
     conflict_flags: List[str] = []
     data_notes: List[str]
     edgar_status: Optional[str] = None  # "ok" | "degraded" — subtle flakiness indicator
@@ -414,7 +459,9 @@ def analyze_fund(ticker: str):
                 note=cb.cash_drag_cost.methodology,
             ))
 
-        # Tax drag (taxable accounts only)
+        # Tax drag (taxable accounts only). Tagged applies_to="taxable_only"
+        # so the frontend and the rollup can separate it from hidden costs
+        # that affect every account regardless of wrapper.
         if cb.tax_drag_cost and cb.tax_drag_cost.tag != DataSourceTag.UNAVAILABLE and cb.tax_drag_cost.high_bps > 0:
             costs.append(CostComponent(
                 label="Tax Drag (Taxable Accounts)",
@@ -423,26 +470,52 @@ def analyze_fund(ticker: str):
                 high=cb.tax_drag_cost.high_bps,
                 tag="estimated",
                 note=cb.tax_drag_cost.methodology,
+                applies_to="taxable_only",
             ))
 
-    # Totals
+    # Totals — split into two buckets:
+    #   total_hidden_* = costs that apply in ANY account (bid-ask, impact,
+    #       commissions, soft dollars, cash drag)
+    #   total_tax_*    = tax drag, which only applies in taxable brokerage
+    #       accounts and is zero in IRAs / 401(k)s
+    # Everything rolled up under true_cost_* is the tax-deferred-account view
+    # (the default headline). true_cost_taxable_* adds tax drag on top.
     total_hidden_low = max(0, sum(
-        c.low for c in costs if c.low is not None and c.tag != "warning"
+        c.low for c in costs
+        if c.low is not None and c.tag != "warning" and c.applies_to == "all"
     ))
     total_hidden_high = max(0, sum(
-        c.high for c in costs if c.high is not None and c.tag != "warning"
+        c.high for c in costs
+        if c.high is not None and c.tag != "warning" and c.applies_to == "all"
+    ))
+    total_tax_low = max(0, sum(
+        c.low for c in costs
+        if c.low is not None and c.tag != "warning" and c.applies_to == "taxable_only"
+    ))
+    total_tax_high = max(0, sum(
+        c.high for c in costs
+        if c.high is not None and c.tag != "warning" and c.applies_to == "taxable_only"
     ))
 
-    # True total cost
+    # True total cost (tax-deferred account — IRA / 401(k) / HSA)
     true_cost_low_bps = None
     true_cost_high_bps = None
     true_cost_low_pct = None
     true_cost_high_pct = None
+    # True total cost (taxable brokerage account — adds tax drag)
+    true_cost_taxable_low_bps = None
+    true_cost_taxable_high_bps = None
     if expense_ratio_bps is not None:
         true_cost_low_bps = round(expense_ratio_bps + total_hidden_low, 2)
         true_cost_high_bps = round(expense_ratio_bps + total_hidden_high, 2)
         true_cost_low_pct = round(true_cost_low_bps / 100, 3)
         true_cost_high_pct = round(true_cost_high_bps / 100, 3)
+        true_cost_taxable_low_bps = round(
+            expense_ratio_bps + total_hidden_low + total_tax_low, 2
+        )
+        true_cost_taxable_high_bps = round(
+            expense_ratio_bps + total_hidden_high + total_tax_high, 2
+        )
 
     # Dollar impact
     dollar_impact = _compute_dollar_impact(
@@ -459,6 +532,52 @@ def analyze_fund(ticker: str):
             label, color = ASSET_CAT_META.get(cat, (cat, "#94a3b8"))
             mix_list.append(AssetMix(
                 category=cat, label=label, color=color, pct=round(pct, 2)
+            ))
+
+    # Underlying fund composition (fund-of-funds only). Pulls from the
+    # parent's N-PORT holdings, filtered to the holdings flagged as
+    # registered investment companies during structure detection. We
+    # surface these even when CIK resolution failed so the user can
+    # still see the composition pie — cost rollup recursion needs the
+    # CIK, but the pie chart needs only the name and pct of NAV.
+    underlying_funds_list: list[UnderlyingFund] = []
+    if meta.is_fund_of_funds and nport:
+        # Assign a palette so slices are visually distinct. Order by
+        # pct descending so the largest slice gets the first color.
+        palette = [
+            "#4ade80", "#60a5fa", "#a78bfa", "#fbbf24", "#f472b6",
+            "#34d399", "#f87171", "#c084fc", "#fb923c", "#22d3ee",
+            "#facc15", "#818cf8",
+        ]
+        ric_holdings = [
+            h for h in nport.holdings
+            if h.is_registered_investment_company
+            and h.pct_of_net_assets is not None
+            and h.pct_of_net_assets > 0
+        ]
+        ric_holdings.sort(key=lambda h: h.pct_of_net_assets or 0, reverse=True)
+        # Also attempt to pull resolved identifiers from the child node
+        # when structure detection already walked into the holding.
+        resolved_by_name: dict[str, tuple[Optional[str], Optional[str]]] = {}
+        for child in tree.children:
+            if child.metadata and child.metadata.name:
+                resolved_by_name[child.metadata.name] = (
+                    child.metadata.ticker or None,
+                    str(child.metadata.cik) if child.metadata.cik else None,
+                )
+        for i, h in enumerate(ric_holdings):
+            resolved_ticker, resolved_cik = resolved_by_name.get(h.name, (None, None))
+            # Fall back to values the N-PORT parser recorded directly
+            resolved_ticker = resolved_ticker or getattr(h, "underlying_ticker", None)
+            resolved_cik = resolved_cik or getattr(h, "underlying_cik", None)
+            underlying_funds_list.append(UnderlyingFund(
+                name=h.name,
+                pct_of_net_assets=round(h.pct_of_net_assets, 2),
+                cusip=h.cusip,
+                isin=h.isin,
+                color=palette[i % len(palette)],
+                resolved_ticker=resolved_ticker,
+                resolved_cik=resolved_cik,
             ))
 
     # --- N-CEN supplementary data ---
@@ -577,10 +696,14 @@ def analyze_fund(ticker: str):
         costs=costs,
         total_hidden_low=round(total_hidden_low, 2) if total_hidden_low is not None else None,
         total_hidden_high=round(total_hidden_high, 2) if total_hidden_high is not None else None,
+        total_tax_low=round(total_tax_low, 2) if total_tax_low is not None else None,
+        total_tax_high=round(total_tax_high, 2) if total_tax_high is not None else None,
         true_cost_low_bps=true_cost_low_bps,
         true_cost_high_bps=true_cost_high_bps,
         true_cost_low_pct=true_cost_low_pct,
         true_cost_high_pct=true_cost_high_pct,
+        true_cost_taxable_low_bps=true_cost_taxable_low_bps,
+        true_cost_taxable_high_bps=true_cost_taxable_high_bps,
         dollar_impact=dollar_impact,
         top_brokers=top_brokers,
         affiliated_brokers=affiliated_brokers_list,
@@ -588,6 +711,7 @@ def analyze_fund(ticker: str):
         service_providers=service_providers,
         aggregate_commission_dollars=aggregate_commission_dollars,
         asset_mix=mix_list,
+        underlying_funds=underlying_funds_list,
         conflict_flags=conflict_flags,
         data_notes=tree.data_notes,
         edgar_status=edgar_status,
@@ -764,7 +888,13 @@ def fee_history(ticker: str):
         from fundautopsy.core.fund import identify_fund
 
         fund = identify_fund(ticker)
-        history = track_fee_changes(cik=fund.cik, ticker=ticker, max_filings=5)
+        history = track_fee_changes(
+            cik=int(fund.cik),
+            ticker=ticker,
+            series_id=fund.series_id,
+            class_id=fund.class_id,
+            max_filings=5,
+        )
 
         snapshots = [
             {
@@ -865,6 +995,171 @@ def analyze_ncsr(ticker: str):
     except Exception as e:
         logger.exception("N-CSR analysis failed for %s", ticker)
         raise HTTPException(500, "N-CSR analysis failed due to an internal error")
+
+
+# --- Portfolio-level total cost of ownership rollup ---
+
+
+class PortfolioInputHolding(BaseModel):
+    """One holding row as received from the client."""
+
+    ticker: str
+    weight: float  # percentage (0-100)
+
+
+class PortfolioRequest(BaseModel):
+    """Request body for /api/portfolio.
+
+    Accepts either a list of structured holdings or a raw textarea-style
+    string. One must be provided.
+    """
+
+    raw: Optional[str] = None
+    holdings: Optional[List[PortfolioInputHolding]] = None
+    starting_balance: Optional[float] = None
+    gross_return_pct: Optional[float] = None  # e.g. 7.0 for 7%
+
+
+class PortfolioHoldingRow(BaseModel):
+    ticker: str
+    fund_name: str
+    weight_pct: float
+    expense_ratio_bps: Optional[float]
+    brokerage_commissions_bps: Optional[float]
+    underlying_funds_weighted_bps: Optional[float]
+    true_tco_bps: Optional[float]
+    portfolio_contribution_bps: Optional[float]
+    data_quality: str
+    is_fund_of_funds: bool
+    notes: List[str]
+
+
+class PortfolioProjection(BaseModel):
+    horizon_years: int
+    terminal_wealth_true_tco: float
+    terminal_wealth_stated_er: float
+    drag_dollars: float
+    drag_percent: float
+
+
+class PortfolioResponse(BaseModel):
+    holdings: List[PortfolioHoldingRow]
+    weighted_true_tco_bps: float
+    weighted_expense_ratio_bps: float
+    hidden_gap_bps: float
+    priced_weight_fraction: float
+    unpriced_weight_fraction: float
+    projections: List[PortfolioProjection]
+    starting_balance: float
+    gross_return_annual: float
+    data_notes: List[str]
+
+
+@app.post("/api/portfolio", response_model=PortfolioResponse)
+def analyze_portfolio(req: PortfolioRequest):
+    """Compute portfolio-weighted true total cost of ownership.
+
+    Accepts either a raw textarea-style input string or a list of
+    structured holdings. Runs the full single-fund pipeline against
+    each ticker, aggregates weighted costs, and projects compound drag
+    over 10 / 20 / 30-year horizons.
+    """
+    from fundautopsy.core.portfolio import (
+        PortfolioHolding,
+        parse_portfolio_input,
+        rollup_portfolio,
+        DEFAULT_STARTING_BALANCE,
+        DEFAULT_GROSS_RETURN,
+    )
+
+    # Resolve holdings input.
+    holdings: List[PortfolioHolding]
+    try:
+        if req.holdings:
+            holdings = [
+                PortfolioHolding(ticker=h.ticker.strip().upper(), weight=h.weight)
+                for h in req.holdings
+            ]
+        elif req.raw:
+            holdings = parse_portfolio_input(req.raw)
+        else:
+            raise HTTPException(
+                400, "Provide either 'holdings' or 'raw' in the request body."
+            )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+    starting_balance = (
+        req.starting_balance if req.starting_balance is not None
+        else DEFAULT_STARTING_BALANCE
+    )
+    gross_return = (
+        req.gross_return_pct / 100.0 if req.gross_return_pct is not None
+        else DEFAULT_GROSS_RETURN
+    )
+    if starting_balance <= 0:
+        raise HTTPException(400, "Starting balance must be positive.")
+    if not -0.5 <= gross_return <= 0.5:
+        raise HTTPException(
+            400, "Gross return must be between -50% and 50%."
+        )
+
+    try:
+        tco = rollup_portfolio(
+            holdings=holdings,
+            starting_balance=starting_balance,
+            gross_return_annual=gross_return,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        logger.exception("Portfolio rollup failed")
+        raise HTTPException(500, "Portfolio analysis failed due to an internal error")
+
+    return PortfolioResponse(
+        holdings=[
+            PortfolioHoldingRow(
+                ticker=h.ticker,
+                fund_name=h.fund_name,
+                weight_pct=round(h.weight_pct, 4),
+                expense_ratio_bps=round(h.expense_ratio_bps, 2) if h.expense_ratio_bps is not None else None,
+                brokerage_commissions_bps=round(h.brokerage_commissions_bps, 2) if h.brokerage_commissions_bps is not None else None,
+                underlying_funds_weighted_bps=round(h.underlying_funds_weighted_bps, 2) if h.underlying_funds_weighted_bps is not None else None,
+                true_tco_bps=round(h.true_tco_bps, 2) if h.true_tco_bps is not None else None,
+                portfolio_contribution_bps=round(h.portfolio_contribution_bps, 4) if h.portfolio_contribution_bps is not None else None,
+                data_quality=h.data_quality,
+                is_fund_of_funds=h.is_fund_of_funds,
+                notes=h.notes,
+            )
+            for h in tco.holdings
+        ],
+        weighted_true_tco_bps=round(tco.weighted_true_tco_bps, 2),
+        weighted_expense_ratio_bps=round(tco.weighted_expense_ratio_bps, 2),
+        hidden_gap_bps=round(tco.hidden_gap_bps, 2),
+        priced_weight_fraction=round(tco.priced_weight_fraction, 4),
+        unpriced_weight_fraction=round(tco.unpriced_weight_fraction, 4),
+        projections=[
+            PortfolioProjection(
+                horizon_years=p.horizon_years,
+                terminal_wealth_true_tco=round(p.terminal_wealth_true_tco, 2),
+                terminal_wealth_stated_er=round(p.terminal_wealth_stated_er, 2),
+                drag_dollars=round(p.drag_dollars, 2),
+                drag_percent=round(p.drag_percent, 4),
+            )
+            for p in tco.projections
+        ],
+        starting_balance=tco.starting_balance,
+        gross_return_annual=tco.gross_return_annual,
+        data_notes=tco.data_notes,
+    )
+
+
+@app.get("/portfolio", response_class=HTMLResponse)
+def portfolio_page():
+    """Server-rendered portfolio rollup page."""
+    from fundautopsy.web.frontend import PORTFOLIO_HTML
+
+    return PORTFOLIO_HTML
 
 
 @app.get("/health")

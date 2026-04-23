@@ -187,7 +187,7 @@ def render(result: FundNode, console: Console) -> None:
     console.print(
         "[dim]Methodology: Brokerage commissions from N-CEN. Spread and impact "
         "estimated from N-PORT asset class mix and assumed turnover. "
-        "See fundautopsy.tombstoneresearch.com/methodology for details.[/dim]"
+        "See github.com/Tombstone-Research/fund-autopsy/blob/main/docs/methodology.md for details.[/dim]"
     )
     console.print()
 

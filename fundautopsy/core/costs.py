@@ -211,11 +211,17 @@ def _compute_single_fund_costs(node: FundNode) -> CostBreakdown:
             ),
         )
     else:
-        # Determine if this is an equity or bond fund from asset mix
+        # Determine if this is an equity or bond fund from asset mix.
+        # When N-PORT is present, use actual holdings weights. When N-PORT
+        # is missing (which happens for some Fidelity index funds like
+        # FXNAX), fall back to fund-name keyword detection so bond funds
+        # don't get tax-classified as equity by default.
         is_equity = True
         if nport and nport.holdings:
             pct_bond = _pct_bond_from_nport(nport)
             is_equity = pct_bond < 50.0
+        else:
+            is_equity = _is_equity_from_name(fund_name_upper)
 
         tax_estimate = estimate_tax_drag(
             turnover_rate_pct=turnover_rate * 100.0,
@@ -225,6 +231,30 @@ def _compute_single_fund_costs(node: FundNode) -> CostBreakdown:
             breakdown.tax_drag_cost = tax_estimate.as_cost_range()
 
     return breakdown
+
+
+_BOND_FUND_KEYWORDS: tuple[str, ...] = (
+    "BOND", "INCOME", "TREASURY", "TIPS", "FIXED INCOME", "FIXED-INCOME",
+    "MUNI", "MUNICIPAL", "AGG", "AGGREGATE", "CORPORATE BOND",
+    "GOVERNMENT BOND", "GOVT BOND", "FLOATING RATE", "BANK LOAN",
+    "HIGH YIELD", "SHORT-TERM BOND", "INTERMEDIATE BOND", "LONG-TERM BOND",
+    "MORTGAGE", "CREDIT FUND",
+)
+
+
+def _is_equity_from_name(fund_name_upper: str) -> bool:
+    """Classify fund as equity vs bond based on fund name when N-PORT
+    holdings aren't available.
+
+    Conservative fallback: if any strong bond-fund keyword is present,
+    treat it as a bond fund. Otherwise default to equity.
+    """
+    if not fund_name_upper:
+        return True
+    for kw in _BOND_FUND_KEYWORDS:
+        if kw in fund_name_upper:
+            return False
+    return True
 
 
 def _pct_small_cap_from_nport(nport: NPortData) -> float:

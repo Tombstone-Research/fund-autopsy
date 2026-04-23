@@ -249,19 +249,32 @@ function recalculateDollarImpact() {
 }
 
 // Stage animation
+// Real analyses take 15-60s against SEC EDGAR. The previous 4 × 1800ms = 7.2s
+// cycle completed and then hung on the last stage for tens of seconds, which
+// read to the user as "broken". Instead, pace the stages to a realistic
+// total (~24s for the first three) and leave the final stage pulsing as a
+// true "this can take a moment" state until analyze() returns.
 let stageTimer;
 function animateStages() {
   const ids = ['s1','s2','s3','s4'];
+  // Per-stage dwell in ms, calibrated to observed EDGAR round-trip times:
+  // submission index, prospectus fetch, holdings rollup, cost synthesis.
+  const dwells = [3500, 8000, 8000];
   let i = 0;
   clearInterval(stageTimer);
   ids.forEach(id => { document.getElementById(id).className = 'stage'; });
   document.getElementById(ids[0]).className = 'stage active';
-  stageTimer = setInterval(() => {
-    if (i < ids.length) document.getElementById(ids[i]).className = 'stage done';
-    i++;
-    if (i < ids.length) document.getElementById(ids[i]).className = 'stage active';
-    if (i >= ids.length) clearInterval(stageTimer);
-  }, 1800);
+  function step() {
+    if (i < dwells.length) {
+      document.getElementById(ids[i]).className = 'stage done';
+      i++;
+      document.getElementById(ids[i]).className = 'stage active';
+      stageTimer = setTimeout(step, dwells[i] || 1500);
+    }
+    // When we reach the final stage we leave it pulsing "active" until
+    // analyze() finishes (the caller clears it by calling clearInterval).
+  }
+  stageTimer = setTimeout(step, dwells[0]);
 }
 
 // Score Card Generation (Shareable Report Card)
@@ -405,14 +418,27 @@ function renderDash(d) {
 
   // Title
   document.getElementById('fundTitle').innerHTML =
-    `${d.name} <span class="ticker">${d.ticker}</span>`;
-  document.getElementById('fundFamily').textContent = d.family + ' — ' + d.share_class;
+    `${d.name || d.ticker} <span class="ticker">${d.ticker}</span>`;
+  // Build the family/share-class subtitle defensively — either piece may be
+  // null and a literal "null" or "undefined" renders as a broken subtitle.
+  const subtitleParts = [];
+  if (d.family) subtitleParts.push(d.family);
+  if (d.share_class) subtitleParts.push(d.share_class);
+  document.getElementById('fundFamily').textContent =
+    subtitleParts.length ? subtitleParts.join(' — ') : '';
 
   // KPIs
+  const turnoverVal = d.portfolio_turnover != null
+    ? d.portfolio_turnover.toFixed(1) + '%'
+    : 'N/A';
+  const holdingsVal = d.holdings_count != null
+    ? String(d.holdings_count)
+    : 'N/A';
+  const netAssetsVal = d.net_assets_display || 'N/A';
   const kpis = [
-    { label: 'Net Assets', value: d.net_assets_display },
-    { label: 'Holdings', value: String(d.holdings_count) },
-    { label: 'Turnover', value: (d.portfolio_turnover || 0).toFixed(1) + '%' },
+    { label: 'Net Assets', value: netAssetsVal },
+    { label: 'Holdings', value: holdingsVal },
+    { label: 'Turnover', value: turnoverVal },
     { label: 'Filing Period', value: d.period_end || 'N/A' },
   ];
   if (d.position_adjusted_turnover) {
@@ -536,21 +562,32 @@ function renderDash(d) {
     noConflictSection.style.display = 'block';
   }
 
-  // Cost rows
-  let rowsHtml = '';
-  d.costs.forEach(c => {
+  // Cost rows — split into two sections:
+  //   1. Sub-NAV drag that hits EVERY account (bid-ask, impact, commissions,
+  //      soft dollars, cash drag)
+  //   2. Tax cost that ONLY applies in a taxable brokerage account
+  // This stops tax drag from dominating the headline hidden-cost number
+  // for users who hold the fund in an IRA or 401(k).
+  const hiddenRows = d.costs.filter(c => (c.applies_to || 'all') !== 'taxable_only');
+  const taxRows = d.costs.filter(c => (c.applies_to || 'all') === 'taxable_only');
+
+  const renderRow = (c) => {
     const isSub = c.label.includes('Soft Dollar');
     const valClass = c.tag === 'reported' ? 'reported' : c.tag === 'warning' ? 'warning' : 'estimated';
     const tagClass = c.tag === 'reported' ? 'tag-reported' : c.tag === 'warning' ? 'tag-warning' : 'tag-estimated';
     const tagLabel = c.tag === 'reported' ? 'SEC filing' : c.tag === 'warning' ? 'not disclosed' : 'estimated';
     const labelWithIcon = addInfoIcon(c.label);
-    rowsHtml += `<div class="cost-row${isSub ? ' sub' : ''}" ${c.note ? `title="${c.note}"` : ''}>
+    return `<div class="cost-row${isSub ? ' sub' : ''}" ${c.note ? `title="${c.note}"` : ''}>
       <span class="cost-label">${labelWithIcon}</span>
       <span class="cost-val ${valClass}">${c.value || '—'}</span>
       <span class="tag ${tagClass}">${tagLabel}</span>
     </div>`;
-  });
-  // Hidden cost total (sub-NAV drag only, excludes expense ratio)
+  };
+
+  let rowsHtml = '';
+  hiddenRows.forEach(c => { rowsHtml += renderRow(c); });
+
+  // Hidden cost total (sub-NAV drag only, excludes expense ratio and tax)
   const hiddenTotalLabel = hiddenLow && hiddenHigh
     ? `${hiddenLow} – ${hiddenHigh} bps`
     : (hiddenLow ? `${hiddenLow} bps` : '—');
@@ -559,14 +596,45 @@ function renderDash(d) {
     <span class="cost-val total">${hiddenTotalLabel}</span>
     <span class="tag tag-estimated">composite</span>
   </div>`;
-  // True total cost (ER + hidden)
+
+  // True total cost (ER + hidden, tax-deferred account)
   if (trueER && trueHigh) {
     rowsHtml += `<div class="cost-row total" style="border-top:2px solid var(--accent)">
-      <span class="cost-label" style="font-weight:700;color:var(--accent)">True Total Cost</span>
+      <span class="cost-label" style="font-weight:700;color:var(--accent)">True Total Cost <span style="font-weight:400;color:var(--text-dim);font-size:11px">(IRA / 401(k))</span></span>
       <span class="cost-val total" style="color:var(--red)">${trueER} – ${trueHigh}%</span>
       <span class="tag tag-warning">ER + hidden</span>
     </div>`;
   }
+
+  // Separate tax section — only shown when tax drag data exists and is nonzero
+  const hasTax = taxRows.length > 0
+    && (d.total_tax_low != null || d.total_tax_high != null)
+    && ((d.total_tax_high || 0) > 0);
+  if (hasTax) {
+    const taxLow = d.total_tax_low != null ? d.total_tax_low.toFixed(1) : '0';
+    const taxHigh = d.total_tax_high != null ? d.total_tax_high.toFixed(1) : '0';
+    rowsHtml += `<div class="cost-row" style="margin-top:16px;border-top:1px solid var(--border);padding-top:12px;background:transparent">
+      <span class="cost-label" style="font-weight:700;color:var(--text-dim);font-size:11px;letter-spacing:0.05em;text-transform:uppercase">Tax cost (taxable brokerage accounts only)</span>
+      <span></span><span></span>
+    </div>`;
+    taxRows.forEach(c => { rowsHtml += renderRow(c); });
+    rowsHtml += `<div class="cost-row total">
+      <span class="cost-label" style="font-weight:700">Total Tax Cost</span>
+      <span class="cost-val total">${taxLow} – ${taxHigh} bps</span>
+      <span class="tag tag-estimated">if taxable</span>
+    </div>`;
+    // Combined true cost if held in a taxable account
+    if (d.true_cost_taxable_low_bps != null && d.true_cost_taxable_high_bps != null) {
+      const tcLow = (d.true_cost_taxable_low_bps / 100).toFixed(2);
+      const tcHigh = (d.true_cost_taxable_high_bps / 100).toFixed(2);
+      rowsHtml += `<div class="cost-row total">
+        <span class="cost-label" style="font-weight:700;color:var(--text-dim)">True Cost <span style="font-weight:400;font-size:11px">(Taxable Account)</span></span>
+        <span class="cost-val total" style="color:var(--red)">${tcLow} – ${tcHigh}%</span>
+        <span class="tag tag-warning">ER + hidden + tax</span>
+      </div>`;
+    }
+  }
+
   document.getElementById('costRows').innerHTML = rowsHtml;
 
   // Fee breakdown
@@ -603,6 +671,9 @@ function renderDash(d) {
   });
   document.getElementById('assetBars').innerHTML = barsHtml;
 
+  // Fund-of-funds composition pie
+  renderUnderlyingFunds(d.underlying_funds || []);
+
   // Notes
   if (d.data_notes && d.data_notes.length) {
     document.getElementById('notesPanel').style.display = '';
@@ -637,8 +708,13 @@ function renderDash(d) {
     flagsContainer.style.display = 'none';
   }
 
-  // Deep Dive: Commissions
-  document.getElementById('aggCommissions').textContent = '$' + formatNumber(d.aggregate_commission_dollars || 0);
+  // Deep Dive: Commissions. "$0" is misleading when the field is null —
+  // that's typical for ETFs and passives that don't disclose aggregate
+  // commissions in N-CEN. Show "Not disclosed" rather than a fake zero.
+  document.getElementById('aggCommissions').textContent =
+    d.aggregate_commission_dollars != null
+      ? '$' + formatNumber(d.aggregate_commission_dollars)
+      : 'Not disclosed';
 
   // Deep Dive: Brokers
   let brokerHtml = '<div class="panel-header">Top Brokers by Commission</div>';
@@ -709,6 +785,78 @@ function renderDash(d) {
 
   // Fetch supplementary data asynchronously (non-blocking)
   fetchSupplementaryData(d.ticker);
+}
+
+// ── Fund-of-funds composition pie ──
+// Renders an SVG pie chart plus a legend for the underlying registered
+// funds inside a fund-of-funds. Hidden entirely when the list is empty.
+function renderUnderlyingFunds(list) {
+  const panel = document.getElementById('underlyingFundsPanel');
+  const svg = document.getElementById('underlyingPie');
+  const legend = document.getElementById('underlyingLegend');
+  if (!panel || !svg || !legend) return;
+
+  if (!list || list.length === 0) {
+    panel.style.display = 'none';
+    svg.innerHTML = '';
+    legend.innerHTML = '';
+    return;
+  }
+
+  // Work with a non-null slice list; coerce pct to number and drop zeros.
+  const items = list
+    .map(x => ({ ...x, pct: Number(x.pct_of_net_assets) || 0 }))
+    .filter(x => x.pct > 0);
+  if (items.length === 0) {
+    panel.style.display = 'none';
+    svg.innerHTML = '';
+    legend.innerHTML = '';
+    return;
+  }
+
+  const total = items.reduce((s, x) => s + x.pct, 0);
+
+  // Build SVG arc paths. Circle center (0,0), radius 100, viewBox -110 to 110.
+  const r = 100;
+  let startAngle = -Math.PI / 2; // start at 12 o'clock
+  let svgHtml = '';
+  items.forEach(item => {
+    const sliceAngle = (item.pct / total) * 2 * Math.PI;
+    const endAngle = startAngle + sliceAngle;
+    const x1 = r * Math.cos(startAngle);
+    const y1 = r * Math.sin(startAngle);
+    const x2 = r * Math.cos(endAngle);
+    const y2 = r * Math.sin(endAngle);
+    const largeArc = sliceAngle > Math.PI ? 1 : 0;
+    // If a single slice covers the full circle, draw it as two arcs
+    // because SVG can't close a 360° arc with one path segment.
+    let d;
+    if (items.length === 1) {
+      d = `M ${r} 0 A ${r} ${r} 0 1 1 ${-r} 0 A ${r} ${r} 0 1 1 ${r} 0 Z`;
+    } else {
+      d = `M 0 0 L ${x1.toFixed(3)} ${y1.toFixed(3)} ` +
+          `A ${r} ${r} 0 ${largeArc} 1 ${x2.toFixed(3)} ${y2.toFixed(3)} Z`;
+    }
+    const nameAttr = (item.name || '').replace(/"/g, '&quot;');
+    svgHtml += `<path d="${d}" fill="${item.color}"><title>${nameAttr} — ${item.pct.toFixed(1)}%</title></path>`;
+    startAngle = endAngle;
+  });
+  svg.innerHTML = svgHtml;
+
+  // Legend rows, sorted biggest first (already sorted server-side).
+  legend.innerHTML = items.map(item => {
+    const name = (item.name || '').replace(/</g, '&lt;');
+    const ticker = item.resolved_ticker
+      ? `<span class="underlying-ticker">${item.resolved_ticker}</span>`
+      : '';
+    return `<div class="underlying-legend-row">
+      <span class="underlying-swatch" style="background:${item.color}"></span>
+      <span class="underlying-name" title="${name}">${name}${ticker}</span>
+      <span class="underlying-pct">${item.pct.toFixed(1)}%</span>
+    </div>`;
+  }).join('');
+
+  panel.style.display = '';
 }
 
 // ── Supplementary data: SAI, N-CSR, Fee History ──

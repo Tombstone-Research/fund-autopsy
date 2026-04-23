@@ -6,4 +6,4 @@ services:
     healthCheckPath: /health
     envVars:
       - key: EDGAR_IDENTITY
-        value: "Fund Autopsy fundautopsy@tombstoneresearch.com"
+        value: "Fund Autopsy tombstoneresearch@proton.me"

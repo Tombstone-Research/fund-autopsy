@@ -57,14 +57,21 @@ class CostBreakdown:
     cash_drag_cost: CostRange | None = None
     tax_drag_cost: CostRange | None = None  # Taxable accounts only
 
+    # Fund-of-funds roll-up — weighted underlying fund total cost in bps.
+    # Populated by core.rollup.rollup_costs when this node has children.
+    underlying_funds_weighted_bps: TaggedValue | None = None
+
     # Composite
     @property
     def total_reported_bps(self) -> float | None:
-        """Expense ratio + brokerage commissions.
+        """Expense ratio + brokerage commissions + rolled-up underlying costs.
 
         Returns whatever reported cost data is available. If only brokerage
         commissions exist (no prospectus ER), those are still real costs
-        that should be surfaced rather than returning None.
+        that should be surfaced rather than returning None. For a
+        fund-of-funds wrapper, the weighted underlying fund cost is
+        included so callers see the total cost of ownership, not just
+        the wrapper's direct costs.
         """
         er = (
             self.expense_ratio_bps.value
@@ -74,11 +81,13 @@ class CostBreakdown:
             self.brokerage_commissions_bps.value
             if self.brokerage_commissions_bps and self.brokerage_commissions_bps.is_available else None
         )
-        if er is not None:
-            return er + (bc or 0)
-        if bc is not None:
-            return bc
-        return None
+        uf = (
+            self.underlying_funds_weighted_bps.value
+            if self.underlying_funds_weighted_bps and self.underlying_funds_weighted_bps.is_available else None
+        )
+        if er is None and bc is None and uf is None:
+            return None
+        return (er or 0) + (bc or 0) + (uf or 0)
 
     @property
     def total_estimated_low_bps(self) -> float | None:

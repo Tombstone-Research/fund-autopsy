@@ -42,6 +42,18 @@ def get_dashboard_html() -> str:
     return index_path.read_text(encoding="utf-8")
 
 
+def get_portfolio_html() -> str:
+    """Load portfolio-page HTML from static/portfolio.html."""
+    static_dir = Path(__file__).parent / "static"
+    portfolio_path = static_dir / "portfolio.html"
+    if not portfolio_path.exists():
+        raise FileNotFoundError(
+            f"Portfolio HTML not found at {portfolio_path}. "
+            "Ensure fundautopsy/web/static/portfolio.html exists."
+        )
+    return portfolio_path.read_text(encoding="utf-8")
+
+
 # Cache the HTML to avoid disk reads on every request
 # (FastAPI will reload this module in dev mode anyway)
 try:
@@ -74,4 +86,16 @@ except FileNotFoundError as e:
     </div>
 </body>
 </html>
+    """
+
+try:
+    PORTFOLIO_HTML = get_portfolio_html()
+except FileNotFoundError as e:
+    PORTFOLIO_HTML = f"""
+<!DOCTYPE html>
+<html><head><title>Fund Autopsy — Portfolio TCO (setup error)</title></head>
+<body style="font-family: sans-serif; padding: 40px;">
+  <h1>Portfolio page not yet built</h1>
+  <p>{e}</p>
+</body></html>
     """

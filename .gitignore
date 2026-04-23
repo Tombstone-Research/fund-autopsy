@@ -64,6 +64,14 @@ docs/launch_campaign_plan.md
 VALIDATION_REPORT.md
 ISSUES_FOR_TWITTER_SCRUTINY.md
 
+# Internal autonomy plan and weekly autopilot reports (per Ventures/CLAUDE.md)
+AUTONOMY.md
+Intelligence/
+
+# Internal dev notes and pre-commit staging docs
+COMMIT_ME.md
+docs/spec_*.md
+
 # Content directory (internal strategy, design, drafts)
 content/
 

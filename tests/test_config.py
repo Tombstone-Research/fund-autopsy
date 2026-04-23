@@ -41,7 +41,7 @@ class TestConfigurationValues:
         assert CONTACT_EMAIL is not None
         assert "@" in CONTACT_EMAIL
         assert "." in CONTACT_EMAIL
-        assert CONTACT_EMAIL == "fundautopsy@tombstoneresearch.com"
+        assert CONTACT_EMAIL == "tombstoneresearch@proton.me"
 
     def test_github_org_set(self):
         """GitHub organization should be set."""

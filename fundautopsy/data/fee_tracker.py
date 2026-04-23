@@ -1,27 +1,40 @@
 """Fee change tracker — 485A/485B/485C post-effective amendment parser.
 
 Monitors prospectus amendments where funds quietly raise or lower fees
-between annual reports. Builds a time-series of fee changes by parsing
-sequential 485BPOS filings and comparing expense ratios.
+between annual reports. Builds a time-series of fee changes by walking
+sequential 485BPOS filings and comparing per-class expense ratios.
 
 Filing types:
   - 485APOS: Pre-effective amendment (proposed changes)
   - 485BPOS: Post-effective amendment (changes in effect)
   - 485BXT:  Extension for post-effective amendment
 
-This module fetches multiple historical 485BPOS filings for a CIK and
-extracts the fee table from each to detect changes over time.
+Extraction order per filing:
+  1. If a series_id + class_id are known, try XBRL fee facts scoped to
+     that class (oef: and rr: taxonomies, context_ref substring match).
+  2. If XBRL returns nothing (e.g., older filings without inline XBRL),
+     fall back to HTML parsing via `parse_497k_html(html, ticker)`.
+
+The module keeps a legacy CIK-only code path for backward compatibility
+with callers that have not yet been migrated to pass the class-scoped
+identifiers. That path works for single-series registrants (Vanguard,
+Dodge & Cox, TRP) but will misattribute fees on umbrella-trust 485BPOS
+filings that cover many funds in one document — which is why the
+class-scoped path exists.
 """
 
 from __future__ import annotations
 
-import re
+import logging
 import time
 from dataclasses import dataclass, field
 from typing import Optional
 
 from fundautopsy.config import EDGAR_RATE_LIMIT_DELAY
 from fundautopsy.data.fee_parser import parse_497k_html, ParsedFees
+from fundautopsy.data.xbrl_fee_parser import extract_fees_from_xbrl
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -179,19 +192,139 @@ def _compare_snapshots(old: FeeSnapshot, new: FeeSnapshot) -> list[FeeChange]:
 
 # ── Main entry point ─────────────────────────────────────────────────────────
 
+def _snapshot_from_parsed(
+    parsed: ParsedFees,
+    filing_date: str,
+    accession_no: str,
+    form_type: str,
+) -> FeeSnapshot:
+    """Build a FeeSnapshot from a ParsedFees + filing metadata."""
+    return FeeSnapshot(
+        filing_date=filing_date,
+        accession_no=accession_no,
+        form_type=form_type,
+        management_fee=parsed.management_fee,
+        twelve_b1_fee=parsed.twelve_b1_fee,
+        other_expenses=parsed.other_expenses,
+        total_annual_expenses=parsed.total_annual_expenses,
+        fee_waiver=parsed.fee_waiver,
+        net_expenses=parsed.net_expenses,
+        max_sales_load=getattr(parsed, "max_sales_load", None),
+        portfolio_turnover=getattr(parsed, "portfolio_turnover", None),
+    )
+
+
+def _extract_snapshot(
+    filing,
+    ticker: str,
+    series_id: Optional[str],
+    class_id: Optional[str],
+) -> Optional[FeeSnapshot]:
+    """Extract a per-class fee snapshot from a single edgartools filing.
+
+    Tries XBRL first when (series_id, class_id) are known, since that
+    path scopes cleanly to one share class even on umbrella-trust
+    filings. Falls back to HTML parsing when XBRL is absent or does
+    not carry a fact matching the target class.
+    """
+    filing_date = str(getattr(filing, "filing_date", ""))
+    accession_no = str(getattr(filing, "accession_no", ""))
+    form_type = str(getattr(filing, "form", "485BPOS"))
+
+    # XBRL path: requires both IDs
+    if series_id and class_id:
+        try:
+            obj = filing.obj()
+            parsed = extract_fees_from_xbrl(obj, series_id, class_id)
+            if parsed is not None and parsed.has_data:
+                snapshot = _snapshot_from_parsed(
+                    parsed, filing_date, accession_no, form_type
+                )
+                # Synthesize total from components when XBRL omitted the
+                # aggregate tag. Classes without 12b-1 plans (Oakmark Investor,
+                # institutional shares) legitimately omit twelve_b1_fee; we
+                # treat its absence as zero rather than as a signal that the
+                # component set is incomplete.
+                if (
+                    snapshot.total_annual_expenses is None
+                    and snapshot.management_fee is not None
+                    and snapshot.other_expenses is not None
+                ):
+                    snapshot.total_annual_expenses = round(
+                        snapshot.management_fee
+                        + (snapshot.twelve_b1_fee or 0.0)
+                        + snapshot.other_expenses
+                        + (parsed.acquired_fund_fees or 0.0),
+                        4,
+                    )
+                # Sanity guard — reject impossible-value snapshots. No real
+                # active share class has an expense ratio of exactly zero;
+                # this filter catches context_ref substring collisions on
+                # heavy umbrella trusts (Fidelity Concord Street, Fidelity
+                # Aberdeen Street) where XBRL facts from unrelated classes
+                # occasionally slip through the (series_id, class_id) match.
+                if (
+                    snapshot.total_annual_expenses == 0.0
+                    and (snapshot.management_fee or 0.0) == 0.0
+                    and (snapshot.net_expenses or 0.0) == 0.0
+                ):
+                    logger.debug(
+                        "Rejecting zero-fee snapshot on %s — likely "
+                        "context_ref collision", accession_no,
+                    )
+                    return None
+                return snapshot
+        except Exception as exc:
+            logger.debug(
+                "XBRL extraction raised on %s: %s",
+                accession_no,
+                exc,
+            )
+
+    # HTML path: ticker filter. Only run when the caller did NOT supply
+    # series_id + class_id — the HTML path cannot reliably scope to a
+    # specific class on umbrella-trust 485BPOS filings (multiple classes
+    # appear in one document and tickers may be shared across fee tables).
+    # The class-scoped XBRL path above is authoritative for the multi-
+    # series case.
+    if series_id and class_id:
+        return None
+
+    try:
+        html = filing.html()
+    except Exception as exc:
+        logger.debug("filing.html() raised on %s: %s", accession_no, exc)
+        return None
+    if not html:
+        return None
+
+    fees = parse_497k_html(html, ticker)
+    if not fees.has_data:
+        return None
+
+    return _snapshot_from_parsed(fees, filing_date, accession_no, form_type)
+
+
 def track_fee_changes(
     cik: int,
     ticker: str,
+    series_id: Optional[str] = None,
+    class_id: Optional[str] = None,
     max_filings: int = 5,
 ) -> FeeHistory:
     """Track fee changes across historical prospectus amendments.
 
-    Fetches recent 485BPOS filings, extracts the fee table from each,
-    and compares them to detect fee changes over time.
+    Uses the class-scoped pipeline (XBRL first, HTML fallback) when
+    series_id and class_id are known. Falls back to a CIK-scoped
+    HTML-only walk for legacy callers.
 
     Args:
         cik: SEC CIK number for the fund trust.
         ticker: Fund ticker for share class matching.
+        series_id: EDGAR series identifier (e.g., 'S000006027'). When
+            provided together with class_id, enables XBRL extraction on
+            umbrella-trust 485BPOS filings.
+        class_id: EDGAR share class identifier (e.g., 'C000100045').
         max_filings: Maximum number of historical filings to check.
 
     Returns:
@@ -199,45 +332,87 @@ def track_fee_changes(
     """
     history = FeeHistory(ticker=ticker, cik=cik)
 
+    # Class-scoped path: use edgartools' series-level filings iterator.
+    # This avoids the misattribution risk on umbrella trusts and unlocks
+    # XBRL extraction per snapshot.
+    if series_id and class_id:
+        try:
+            import edgar
+            from fundautopsy.config import EDGAR_USER_AGENT
+            # edgartools silently fails series resolution if identity isn't
+            # set in its global state. The fee_tracker module may be invoked
+            # without prospectus.py having been touched first, so set it
+            # here defensively.
+            try:
+                edgar.set_identity(EDGAR_USER_AGENT)
+            except Exception:
+                pass
+        except ImportError:
+            edgar = None  # Fall through to legacy path
+
+        if edgar is not None:
+            try:
+                series = edgar.Fund(series_id)
+                all_filings = series.get_filings()
+                bpos = all_filings.filter(form="485BPOS")
+            except Exception as exc:
+                logger.debug(
+                    "edgar.Fund(%s).get_filings() raised: %s",
+                    series_id, exc,
+                )
+                bpos = None
+
+            if bpos is not None:
+                count = 0
+                for filing in bpos:
+                    if count >= max_filings:
+                        break
+                    snapshot = _extract_snapshot(
+                        filing, ticker, series_id, class_id
+                    )
+                    if snapshot is not None:
+                        history.snapshots.append(snapshot)
+                        count += 1
+                _build_changes(history)
+                return history
+
+    # Legacy CIK-only path: preserved for backward compatibility.
+    # Works for single-series registrants whose 485BPOS documents carry
+    # one fund's fee table per filing. Will misattribute on umbrella
+    # trusts — callers should pass series_id + class_id when known.
     filings = _find_485_filings(cik, max_filings=max_filings)
     if not filings:
         return history
 
-    for filing in filings:
+    for filing_meta in filings:
         html = _fetch_filing_html(
-            cik, filing["accession_no"], filing["primary_doc"]
+            cik, filing_meta["accession_no"], filing_meta["primary_doc"]
         )
         if not html:
             continue
 
-        # Reuse the 497K fee parser — 485BPOS uses the same fee table format
         fees = parse_497k_html(html, ticker)
         if not fees.has_data:
             continue
 
-        snapshot = FeeSnapshot(
-            filing_date=filing["filing_date"],
-            accession_no=filing["accession_no"],
-            form_type=filing["form_type"],
-            management_fee=fees.management_fee,
-            twelve_b1_fee=fees.twelve_b1_fee,
-            other_expenses=fees.other_expenses,
-            total_annual_expenses=fees.total_annual_expenses,
-            fee_waiver=fees.fee_waiver,
-            net_expenses=fees.net_expenses,
-            max_sales_load=fees.max_sales_load,
-            portfolio_turnover=fees.portfolio_turnover,
-        )
-        history.snapshots.append(snapshot)
+        history.snapshots.append(_snapshot_from_parsed(
+            fees,
+            filing_meta["filing_date"],
+            filing_meta["accession_no"],
+            filing_meta["form_type"],
+        ))
 
-    # Compare sequential snapshots (newest to oldest)
+    _build_changes(history)
+    return history
+
+
+def _build_changes(history: FeeHistory) -> None:
+    """Populate history.changes by comparing sequential snapshots."""
     for i in range(len(history.snapshots) - 1):
         newer = history.snapshots[i]
         older = history.snapshots[i + 1]
         changes = _compare_snapshots(older, newer)
         history.changes.extend(changes)
-
-    return history
 
 
 # ── CLI convenience ──────────────────────────────────────────────────────────

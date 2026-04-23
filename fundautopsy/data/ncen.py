@@ -71,12 +71,108 @@ class SecuritiesLendingData:
 
 
 @dataclass
+class DerivativeUsage:
+    """A single derivatives exposure category from N-CEN Item C.4.
+
+    Each record represents one derivative type the fund transacted in
+    during the reporting period. Thread 6 ("derivatives mismatch") uses
+    the count of distinct types and aggregate notional to flag funds
+    whose derivative complexity is understated by the prospectus.
+    """
+
+    derivative_type: str  # e.g., "forwardCurrency", "future", "swap", "option"
+    purpose: str = ""  # e.g., "hedging", "replication", "income"
+    notional_value: Optional[float] = None  # Absolute dollar notional
+    count: int = 0  # Number of distinct contracts, if reported
+    counterparty: str = ""
+
+
+# Known N-CEN derivative category tag prefixes. The XSD uses a mix of
+# boolean "did-you-use-this" flags and typed transaction records across
+# reporting periods, so we scan for multiple shapes.
+_DERIVATIVE_TYPE_FLAGS: dict[str, str] = {
+    "isForwardCurrency": "forwardCurrency",
+    "isForwardOther": "forwardOther",
+    "isFuturesContract": "future",
+    "isOption": "option",
+    "isSwaption": "swaption",
+    "isSwap": "swap",
+    "isCreditDefaultSwap": "creditDefaultSwap",
+    "isInterestRateSwap": "interestRateSwap",
+    "isTotalReturnSwap": "totalReturnSwap",
+    "isWarrant": "warrant",
+    "isStructuredNote": "structuredNote",
+}
+
+
+@dataclass
+class LendingInstitution:
+    """A lender or counterparty on a fund's line of credit."""
+
+    name: str
+    lei: str = ""
+    file_no: str = ""
+
+
+@dataclass
 class LineOfCreditData:
-    """Line of credit details."""
+    """Line of credit details from N-CEN Item C.5.
+
+    Captures the facility sizing, committed/uncommitted status, and
+    co-borrower list used to evaluate credit line stress (Thread 5).
+
+    Utilization ratio requires max outstanding, which is not always
+    reported in every N-CEN filing. When unavailable, we report the
+    committed facility size alongside the shared-borrower list as a
+    concentration signal instead.
+    """
 
     has_line_of_credit: bool = False
     is_interfund_lending: bool = False
     is_interfund_borrowing: bool = False
+
+    # Facility sizing (dollars)
+    committed_facility_size: Optional[float] = None  # N-CEN lineOfCreditSize
+    max_outstanding_balance: Optional[float] = None  # When reported
+    avg_outstanding_balance: Optional[float] = None  # When reported
+
+    # Facility structure
+    is_facility_shared: bool = False  # True when sharedCreditType creditType="Shared"
+    is_credit_line_used: bool = False  # N-CEN isCreditLineUsed
+    credit_line_type: str = ""  # "Committed" or "Uncommitted"
+
+    # Lenders/counterparties
+    lending_institutions: list[LendingInstitution] = field(default_factory=list)
+
+    # Funds sharing the facility (for shared lines)
+    co_borrowers: list[str] = field(default_factory=list)
+
+    @property
+    def utilization_ratio(self) -> Optional[float]:
+        """Max outstanding / committed facility, as a fraction.
+
+        Returns None if max outstanding is missing or the facility size
+        is zero. A ratio >0.75 is typically interpreted as stressed
+        usage; >1.0 indicates a parsing or reporting anomaly.
+        """
+        if (
+            self.committed_facility_size is not None
+            and self.max_outstanding_balance is not None
+            and self.committed_facility_size > 0
+        ):
+            return self.max_outstanding_balance / self.committed_facility_size
+        return None
+
+    @property
+    def co_borrower_count(self) -> int:
+        """Number of other funds sharing the same credit facility.
+
+        When a fund family shares one line across many funds, a single
+        stress event at one sibling can drain capacity for everyone —
+        this count is the concentration signal when max outstanding is
+        not reported.
+        """
+        return len(self.co_borrowers)
 
 
 @dataclass
@@ -108,6 +204,27 @@ class NCENFullData:
 
     # Line of credit
     line_of_credit: Optional[LineOfCreditData] = None
+
+    # Derivatives (Item C.4)
+    derivatives: list[DerivativeUsage] = field(default_factory=list)
+
+    @property
+    def distinct_derivative_types(self) -> int:
+        """Count of distinct derivative categories the fund transacted in."""
+        return len({d.derivative_type for d in self.derivatives if d.derivative_type})
+
+    @property
+    def aggregate_derivative_notional(self) -> Optional[float]:
+        """Sum of absolute notional across all derivative records.
+
+        Returns None if no notional values were reported (some N-CEN
+        filings disclose the boolean category flags but not dollar
+        amounts).
+        """
+        notionals = [abs(d.notional_value) for d in self.derivatives if d.notional_value is not None]
+        if not notionals:
+            return None
+        return sum(notionals)
 
     # Service providers
     investment_adviser: str = ""
@@ -373,12 +490,75 @@ def _parse_series_section(
     else:
         result.securities_lending = SecuritiesLendingData(is_lending=False)
 
-    # Line of credit
+    # Line of credit — Item C.5
     loc = LineOfCreditData()
-    loc.has_line_of_credit = section.find(".//n:lineOfCreditDetails", NCEN_NS) is not None
     loc.is_interfund_lending = _text(section, "isInterfundLending") == "Y"
     loc.is_interfund_borrowing = _text(section, "isInterfundBorrowing") == "Y"
+
+    # The <lineOfCredit> element itself carries the existence flag as an
+    # attribute. Its absence means the fund has no facility.
+    line_of_credit_wrapper = section.find(".//n:lineOfCredit", NCEN_NS)
+    if line_of_credit_wrapper is not None:
+        loc.has_line_of_credit = (
+            line_of_credit_wrapper.get("hasLineOfCredit", "N").upper() == "Y"
+        )
+        # Walk each <lineOfCreditDetail> record. Most filings have one,
+        # but nothing in the schema prohibits multiple facilities.
+        for detail in line_of_credit_wrapper.findall(".//n:lineOfCreditDetail", NCEN_NS):
+            # Credit line type: "Committed" or "Uncommitted" as element text
+            loc.credit_line_type = loc.credit_line_type or _text(detail, "isCreditLineCommitted")
+
+            # Usage flag
+            if _text(detail, "isCreditLineUsed").upper() == "Y":
+                loc.is_credit_line_used = True
+
+            # Facility size — first non-null wins when multiple details exist
+            size = _float(detail, "lineOfCreditSize")
+            if size is not None and loc.committed_facility_size is None:
+                loc.committed_facility_size = size
+
+            # Max outstanding — newer filings may expose this; check both
+            # nested and flat positions.
+            max_out = (
+                _float(detail, "maxBorrowedDuringPeriod")
+                or _float(detail, "maxLineOfCreditOutstanding")
+                or _float(detail, "maxOutstandingBalance")
+            )
+            if max_out is not None and loc.max_outstanding_balance is None:
+                loc.max_outstanding_balance = max_out
+
+            avg_out = (
+                _float(detail, "averageLineOfCreditBorrowed")
+                or _float(detail, "averageOutstanding")
+            )
+            if avg_out is not None and loc.avg_outstanding_balance is None:
+                loc.avg_outstanding_balance = avg_out
+
+            # Lending institutions (attribute-based in real N-CEN schema)
+            for inst in detail.findall(".//n:lineOfCreditInstitution", NCEN_NS):
+                name = (inst.get("creditInstitutionName") or "").strip()
+                if not name:
+                    continue
+                loc.lending_institutions.append(LendingInstitution(
+                    name=name,
+                    lei=(inst.get("creditInstitutionLei") or "").strip(),
+                    file_no=(inst.get("creditInstitutionFileNo") or "").strip(),
+                ))
+
+            # Shared credit — attribute on <sharedCreditType>
+            shared_elem = detail.find("n:sharedCreditType", NCEN_NS)
+            if shared_elem is not None:
+                if (shared_elem.get("creditType") or "").strip().lower() == "shared":
+                    loc.is_facility_shared = True
+                for user in shared_elem.findall("n:creditUser", NCEN_NS):
+                    fname = (user.get("fundName") or "").strip()
+                    if fname:
+                        loc.co_borrowers.append(fname)
+
     result.line_of_credit = loc
+
+    # Derivatives — Item C.4
+    result.derivatives = _parse_derivatives(section)
 
     # Service providers
     adv = section.find(".//n:investmentAdviser", NCEN_NS)
@@ -400,6 +580,90 @@ def _parse_series_section(
         result.custodian_primary = _text(cust, "custodianName")
 
     return result
+
+
+def _parse_derivatives(section: etree._Element) -> list[DerivativeUsage]:
+    """Extract derivatives usage from a managementInvestmentQuestion section.
+
+    N-CEN Item C.4 takes two shapes across reporting periods:
+      1. Typed transaction records: explicit <derivativeInstrument> or
+         <derivativesTransaction> elements with <derivativeType>,
+         <derivativeNotional>, <purpose>, <counterparty> children.
+      2. Boolean flags: <isForwardCurrency>Y</isForwardCurrency>,
+         <isFuturesContract>Y</isFuturesContract>, etc. with notionals
+         in sibling <forwardCurrencyNotional>, <futuresNotional> fields.
+
+    We scan for both and deduplicate by derivative_type.
+    """
+    records: dict[str, DerivativeUsage] = {}
+
+    # Shape 1: typed transaction records
+    for container_tag in (
+        "derivativeInstrument",
+        "derivativesTransaction",
+        "derivativesInvestment",
+        "derivativeTransaction",
+    ):
+        for elem in section.findall(f".//n:{container_tag}", NCEN_NS):
+            dtype = (
+                _text(elem, "derivativeType")
+                or _text(elem, "type")
+                or _text(elem, "instrumentType")
+            )
+            if not dtype:
+                continue
+            notional = (
+                _float(elem, "derivativeNotional")
+                or _float(elem, "notional")
+                or _float(elem, "notionalValue")
+                or _float(elem, "notionalAmount")
+            )
+            purpose = _text(elem, "purpose") or _text(elem, "strategy")
+            counterparty = (
+                _text(elem, "counterparty")
+                or _text(elem, "counterpartyName")
+                or _text(elem, "derivCounterparty")
+            )
+            key = dtype.strip()
+            if key in records:
+                # Aggregate: increment count and sum notionals
+                existing = records[key]
+                existing.count += 1
+                if notional is not None:
+                    existing.notional_value = (existing.notional_value or 0) + abs(notional)
+            else:
+                records[key] = DerivativeUsage(
+                    derivative_type=key,
+                    purpose=purpose,
+                    notional_value=abs(notional) if notional is not None else None,
+                    count=1,
+                    counterparty=counterparty.strip(),
+                )
+
+    # Shape 2: boolean flags + sibling notionals
+    for flag_tag, canonical_type in _DERIVATIVE_TYPE_FLAGS.items():
+        if _text(section, flag_tag).upper() != "Y":
+            continue
+        if canonical_type in records:
+            continue  # Already recorded via shape 1
+        # Look for matching notional sibling — "isFuturesContract" -> "futuresContractNotional"
+        notional_candidates = [
+            flag_tag.replace("is", "", 1)[0].lower() + flag_tag.replace("is", "", 1)[1:] + "Notional",
+            canonical_type + "Notional",
+            canonical_type + "NotionalValue",
+        ]
+        notional = None
+        for cand in notional_candidates:
+            notional = _float(section, cand)
+            if notional is not None:
+                break
+        records[canonical_type] = DerivativeUsage(
+            derivative_type=canonical_type,
+            notional_value=abs(notional) if notional is not None else None,
+            count=1 if notional is None else 1,
+        )
+
+    return list(records.values())
 
 
 def _text(elem: etree._Element, child_tag: str) -> str:

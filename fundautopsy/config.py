@@ -18,7 +18,7 @@ PROJECT_NAME: str = "Fund Autopsy"
 # EDGAR requires a real contact email in the User-Agent header.
 # SEC policy: https://www.sec.gov/os/accessing-edgar-data
 # Use the pseudonym email once it's created.
-CONTACT_EMAIL: str = "fundautopsy@tombstoneresearch.com"
+CONTACT_EMAIL: str = "tombstoneresearch@proton.me"
 
 # GitHub
 GITHUB_ORG: str = "tombstoneresearch"

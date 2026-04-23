@@ -17,6 +17,7 @@ Each check returns a SchemaCheckResult with pass/fail and details.
 from __future__ import annotations
 
 import logging
+import pathlib
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -26,7 +27,8 @@ logger = logging.getLogger(__name__)
 
 # Known-good test CIKs and filings for validation
 # American Funds Growth Fund of America — large, stable, always files on time
-TEST_CIK = 2798
+# Verified 2026-04-20 via MF tickers feed: AGTHX -> CIK 44201
+TEST_CIK = 44201
 TEST_TICKER = "AGTHX"
 
 
@@ -35,7 +37,7 @@ class SchemaCheckResult:
     """Result of a single schema validation check."""
 
     check_name: str
-    passed: bool
+    passed: bool = False
     details: str = ""
     missing_elements: list[str] = field(default_factory=list)
     timestamp: str = ""
@@ -60,18 +62,32 @@ class MonitorReport:
 
 
 # --- Expected XML paths for N-CEN ---
+# These mirror elements the production parser in fundautopsy/data/ncen.py
+# actually consumes. Adding any path here is a real commitment that the parser
+# depends on it — if the path goes missing, the parser breaks for real.
 NCEN_EXPECTED_PATHS = [
-    # Brokerage commissions (C.6.a)
-    ".//genInfo/seriesId",
-    ".//brokerCommissions",
+    # Report header
+    ".//headerData",
+    # Per-series question block (parser loops over these)
+    ".//managementInvestmentQuestion",
+    ".//mgmtInvSeriesId",
+    # Brokerage commissions
+    ".//aggregateCommission",
+    # Broker records (affiliated + non-affiliated)
+    ".//brokerDealer",
+    ".//broker",
     # Service providers
     ".//investmentAdviser",
-    ".//administrator",
-    ".//custodian",
+    ".//admin",
     ".//transferAgent",
-    # Securities lending
-    ".//securitiesLending",
+    ".//custodian",
+    # Securities lending flag
+    ".//isFundSecuritiesLending",
 ]
+# NOTE: reportCalendarOrQuarter was removed from NCEN_EXPECTED_PATHS on
+# 2026-04-21 because the production parser falls back to filing_date from the
+# EDGAR submissions list when the element is absent. Verified absent in live
+# X0505-era filings (e.g. 0001193125-25-282335).
 
 # --- Expected XML paths for N-PORT ---
 NPORT_EXPECTED_PATHS = [
@@ -137,9 +153,41 @@ def check_edgar_api_schema() -> SchemaCheckResult:
     return check
 
 
+def _download_with_xml_fallback(cik, accession_number, raw_doc, client):
+    """Download a filing's raw XML, falling back to bare primary_doc.xml when
+    the EDGAR API returns an xslForm path (which resolves to rendered HTML,
+    not XML). Mirrors the parser fallback in fundautopsy/data/ncen.py and
+    fundautopsy/data/nport.py.
+    """
+    from fundautopsy.data.edgar import download_filing_xml
+
+    doc_candidates = ["primary_doc.xml"]
+    raw_doc = raw_doc or ""
+    if raw_doc and "/" not in raw_doc and raw_doc != "primary_doc.xml":
+        doc_candidates.insert(0, raw_doc)
+
+    for doc_name in doc_candidates:
+        try:
+            xml_bytes = download_filing_xml(
+                cik=cik,
+                accession_number=accession_number,
+                primary_document=doc_name,
+                client=client,
+            )
+            if xml_bytes and xml_bytes[:100].lower().find(b"<html") == -1:
+                return xml_bytes
+        except Exception as exc:
+            logger.debug(
+                "schema monitor download failed %s/%s: %s",
+                accession_number, doc_name, exc,
+            )
+            continue
+    return None
+
+
 def check_ncen_schema() -> SchemaCheckResult:
     """Validate N-CEN XML structure against expected element paths."""
-    from fundautopsy.data.edgar import download_filing_xml, get_edgar_client, get_filings
+    from fundautopsy.data.edgar import get_edgar_client, get_filings
 
     check = SchemaCheckResult(check_name="N-CEN XML Schema")
     try:
@@ -152,10 +200,18 @@ def check_ncen_schema() -> SchemaCheckResult:
             return check
 
         filing = filings[0]
-        xml_bytes = download_filing_xml(
-            TEST_CIK, filing.accession_number, filing.primary_document, client=client
+        xml_bytes = _download_with_xml_fallback(
+            TEST_CIK, filing.accession_number, filing.primary_document, client
         )
         client.close()
+
+        if not xml_bytes:
+            check.passed = False
+            check.details = (
+                f"Could not download raw N-CEN XML for {filing.accession_number}. "
+                "Both primary_document and bare primary_doc.xml returned HTML or failed."
+            )
+            return check
 
         root = ElementTree.fromstring(xml_bytes)
 
@@ -191,7 +247,7 @@ def check_ncen_schema() -> SchemaCheckResult:
 
 def check_nport_schema() -> SchemaCheckResult:
     """Validate N-PORT XML structure against expected element paths."""
-    from fundautopsy.data.edgar import download_filing_xml, get_edgar_client, get_filings
+    from fundautopsy.data.edgar import get_edgar_client, get_filings
 
     check = SchemaCheckResult(check_name="N-PORT XML Schema")
     try:
@@ -204,10 +260,18 @@ def check_nport_schema() -> SchemaCheckResult:
             return check
 
         filing = filings[0]
-        xml_bytes = download_filing_xml(
-            TEST_CIK, filing.accession_number, filing.primary_document, client=client
+        xml_bytes = _download_with_xml_fallback(
+            TEST_CIK, filing.accession_number, filing.primary_document, client
         )
         client.close()
+
+        if not xml_bytes:
+            check.passed = False
+            check.details = (
+                f"Could not download raw N-PORT XML for {filing.accession_number}. "
+                "Both primary_document and bare primary_doc.xml returned HTML or failed."
+            )
+            return check
 
         root = ElementTree.fromstring(xml_bytes)
 
@@ -344,7 +408,58 @@ def format_report(report: MonitorReport) -> str:
     return "\n".join(lines)
 
 
+def format_markdown_report(report: MonitorReport) -> str:
+    """Format a monitoring report as a dated markdown file.
+
+    Emits consistent `**Result:** PASS` / `**Result:** FAIL` markers that
+    the autopilot parser can count.
+    """
+    passed = sum(1 for c in report.checks if c.passed)
+    total = len(report.checks)
+    lines = [
+        f"# SEC Schema Monitor — Run Report",
+        "",
+        f"**Run timestamp:** {report.run_timestamp}",
+        f"**Overall:** {'PASS' if report.all_passed else 'FAIL'} ({passed}/{total} checks pass)",
+        f"**Summary:** {report.summary}",
+        "",
+        "---",
+        "",
+    ]
+    for check in report.checks:
+        status = "PASS" if check.passed else "FAIL"
+        lines.append(f"## {check.check_name}")
+        lines.append("")
+        lines.append(f"**Result:** {status}")
+        lines.append("")
+        lines.append(check.details)
+        if check.missing_elements:
+            lines.append("")
+            lines.append("Missing elements:")
+            for elem in check.missing_elements:
+                lines.append(f"- `{elem}`")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def write_dated_markdown(report: MonitorReport, reports_dir: pathlib.Path) -> pathlib.Path:
+    """Persist the markdown report to the dated reports directory."""
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    # run_timestamp looks like "2026-04-21 14:33:10" or similar — take date only
+    date_part = report.run_timestamp.split()[0] if " " in report.run_timestamp else report.run_timestamp[:10]
+    out_path = reports_dir / f"{date_part}_schema_monitor_run.md"
+    out_path.write_text(format_markdown_report(report))
+    latest_path = reports_dir / "latest_run.txt"
+    latest_path.write_text(out_path.name)
+    return out_path
+
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     report = run_all_checks()
     print(format_report(report))
+
+    # Also persist the markdown artifact the autopilot report aggregates.
+    reports_dir = pathlib.Path(__file__).resolve().parent / "reports"
+    path = write_dated_markdown(report, reports_dir)
+    print(f"\nWrote: {path}")

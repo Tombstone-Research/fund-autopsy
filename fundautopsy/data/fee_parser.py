@@ -61,6 +61,24 @@ _LOAD_PATTERN = re.compile(
 _PCT_PATTERN = re.compile(r"(\d+\.?\d*)\s*%")
 _NUM_PATTERN = re.compile(r"(\d+\.?\d*)")
 
+# Strips an XML processing instruction (e.g. `<?xml version="1.0" encoding="UTF-8"?>`)
+# from the head of an HTML document. lxml_html.fromstring() refuses to parse a
+# unicode string that declares an encoding, and 485BPOS filings from some
+# registrants (Fidelity Concord Street Trust, Oakmark, MFS) ship with one.
+_XML_DECL_PATTERN = re.compile(r"^\s*<\?xml[^>]*\?>\s*", re.IGNORECASE)
+
+
+def _parse_html(html_str: str):
+    """lxml_html.fromstring with XML-decl stripping.
+
+    Mutual-fund registrants ship prospectus HTML with a leading
+    <?xml ... encoding="UTF-8"?> processing instruction, which lxml
+    rejects when given a unicode string. We strip it before parsing
+    so downstream lxml code runs on any registrant's HTML.
+    """
+    cleaned = _XML_DECL_PATTERN.sub("", html_str, count=1)
+    return lxml_html.fromstring(cleaned)
+
 
 @dataclass
 class ParsedFees:
@@ -239,7 +257,7 @@ def _parse_table_rows(
 def _parse_div_layout(html_str: str, ticker: str) -> ParsedFees:
     """Parse fee data from div-based layouts (Fidelity style)."""
     fees = ParsedFees()
-    tree = lxml_html.fromstring(html_str)
+    tree = _parse_html(html_str)
 
     # In div-based layouts, fee rows are table rows where the first cell
     # has the label and the second has the value, but styled with <div>/<font>
@@ -296,7 +314,7 @@ def parse_497k_html(
 
 def _extract_turnover_and_load(html_str: str, fees: ParsedFees) -> None:
     """Extract portfolio turnover and sales load from full document text."""
-    text = lxml_html.fromstring(html_str).text_content()
+    text = _parse_html(html_str).text_content()
 
     m = _TURNOVER_PATTERN.search(text)
     if m:
@@ -308,29 +326,210 @@ def _extract_turnover_and_load(html_str: str, fees: ParsedFees) -> None:
 
 
 def find_filing_for_ticker(
-    filings_497k, ticker: str, max_search: int = 20
+    filings_497k, ticker: str, max_search: int = 50
 ) -> Optional[object]:
     """Search through 497K filings to find the one containing the target ticker.
 
-    Some trusts file separate 497Ks per share class or per fund.
-    This iterates through recent filings looking for one that
-    mentions the specific ticker.
+    Some trusts file separate 497Ks per share class or per fund. Large
+    fund families (Fidelity, Vanguard, American Funds) file dozens of
+    separate 497Ks under the same registrant, and the filing that
+    corresponds to the requested ticker may not be near the top of the
+    list. Fidelity Investment Trust (CIK 744822) carries ~750 497Ks
+    across dozens of series, so a 50-filing cap silently failed for
+    every Fidelity Series ticker.
+
+    Strategy, in order:
+      0. Cache hit on a previously-resolved accession number. O(N)
+         metadata scan over the current filings list with no HTML parse.
+      1. SGML submission-header scan. Every 497K carries a
+         <SERIES-AND-CLASSES-CONTRACTS-DATA> block that names the
+         SERIES-ID, CLASS-CONTRACT-ID, and CLASS-CONTRACT-TICKER-SYMBOL
+         the filing covers. This is authoritative (filed directly to
+         EDGAR), cheap (~150 ms per filing, no HTML parse), and so it
+         scans the full filings list rather than a narrow window.
+      2. edgartools share-class parse — fallback for the rare filing
+         where the SGML block is absent but the parsed object carries
+         ticker data.
+      3. HTML substring search — last-resort cheap grep.
 
     Args:
         filings_497k: edgartools filing collection filtered to 497K.
         ticker: Target fund ticker.
-        max_search: Maximum filings to check.
+        max_search: Maximum filings for the expensive fallback passes
+            (edgartools .obj() and HTML substring). The cheap SGML
+            pass scans the full list regardless.
 
     Returns:
         The matching filing object, or None.
     """
+    from fundautopsy.data.filing_lookup_cache import get_default_cache
+
     ticker_upper = ticker.upper()
-    for i in range(min(max_search, len(filings_497k))):
+    total = len(filings_497k)
+    bound = min(max_search, total)
+    cache = get_default_cache()
+
+    # Pass 0: cache-assisted lookup. Accession numbers are immutable, so a
+    # previously-matched accession still present in the current filings
+    # list is a valid answer without re-parsing any HTML. Negative cache
+    # entries short-circuit to None so repeat failures do not re-scan.
+    cached = cache.lookup(ticker_upper)
+    if cached is not None:
+        if cached.get("not_found"):
+            logger.debug(
+                "find_filing_for_ticker negative cache hit for %s", ticker_upper,
+            )
+            return None
+        target_accession = cached.get("accession")
+        if target_accession:
+            # Scan by accession_number only — cheap metadata attribute.
+            for i in range(total):
+                try:
+                    if getattr(filings_497k[i], "accession_number", None) == target_accession:
+                        logger.debug(
+                            "find_filing_for_ticker cache hit for %s -> %s",
+                            ticker_upper, target_accession,
+                        )
+                        return filings_497k[i]
+                except Exception:
+                    continue
+            # Cached accession no longer in list; evict and fall through.
+            cache.evict(ticker_upper)
+
+    # Resolve class_id/series_id hints for the target ticker so that
+    # umbrella trusts (PIMCO Funds, Fidelity Investment Trust, Fidelity
+    # Concord Street) can be matched even when ticker text is missing
+    # from a filing's body.
+    target_class_id: Optional[str] = None
+    target_series_id: Optional[str] = None
+    try:
+        import edgar as _edgar
+        fc = _edgar.find_fund(ticker_upper)
+        if fc is not None:
+            target_class_id = getattr(fc, "class_id", None)
+            s = getattr(fc, "series", None)
+            target_series_id = getattr(s, "series_id", None) if s is not None else None
+    except Exception:
+        pass
+
+    # Pass 1: SGML submission-header scan.
+    # Scans a generous window of filings because header fetches are
+    # cheap (~120 ms) and the target 497K for a given share class in
+    # a large umbrella trust (Fidelity Investment Trust, ~750 filings)
+    # will not sit near the top of the list. Cap the scan at
+    # SGML_SCAN_CAP to bound worst-case cold-lookup latency when a
+    # ticker genuinely has no 497K (e.g., Fidelity Series building-
+    # block funds that appear only in 485BPOS combined prospectuses).
+    # Matching in priority order: ticker tag first (unambiguous),
+    # then class-id (handles ticker-symbol elisions), then series-id
+    # (only accepted when the target series has exactly one share
+    # class, which makes the match unambiguous).
+    SGML_SCAN_CAP: int = 400
+    sgml_bound = min(SGML_SCAN_CAP, total)
+    single_class_series = False
+    if target_class_id and target_series_id:
+        # Single-share-class series: series-id match is sufficient.
+        # Detected via edgartools' class list on the series object.
+        try:
+            classes = fc.series.get_classes() if fc is not None else []
+            single_class_series = len(classes) == 1
+        except Exception:
+            single_class_series = False
+
+    ticker_re = re.compile(
+        rf"<CLASS-CONTRACT-TICKER-SYMBOL>\s*{re.escape(ticker_upper)}\b",
+        re.IGNORECASE,
+    )
+    class_id_re = (
+        re.compile(
+            rf"<CLASS-CONTRACT-ID>\s*{re.escape(target_class_id)}\b",
+            re.IGNORECASE,
+        )
+        if target_class_id else None
+    )
+    series_id_re = (
+        re.compile(
+            rf"<SERIES-ID>\s*{re.escape(target_series_id)}\b",
+            re.IGNORECASE,
+        )
+        if (target_series_id and single_class_series) else None
+    )
+
+    for i in range(sgml_bound):
+        try:
+            hdr_text = filings_497k[i].header.text
+        except Exception as exc:
+            logger.debug(
+                "find_filing_for_ticker: header fetch failed on filing %d for %s: %s",
+                i, ticker_upper, exc,
+            )
+            continue
+        if not hdr_text:
+            continue
+        if ticker_re.search(hdr_text):
+            _cache_hit(cache, ticker_upper, filings_497k[i], target_class_id)
+            return filings_497k[i]
+        if class_id_re is not None and class_id_re.search(hdr_text):
+            _cache_hit(cache, ticker_upper, filings_497k[i], target_class_id)
+            return filings_497k[i]
+        if series_id_re is not None and series_id_re.search(hdr_text):
+            _cache_hit(cache, ticker_upper, filings_497k[i], target_class_id)
+            return filings_497k[i]
+
+    # Pass 2: edgartools share-class parse (bounded fallback).
+    for i in range(bound):
+        try:
+            obj = filings_497k[i].obj()
+            if obj is None:
+                continue
+            for sc in obj.share_classes:
+                if sc.ticker and sc.ticker.upper() == ticker_upper:
+                    _cache_hit(cache, ticker_upper, filings_497k[i], target_class_id)
+                    return filings_497k[i]
+                if target_class_id and getattr(sc, "class_id", None) == target_class_id:
+                    _cache_hit(cache, ticker_upper, filings_497k[i], target_class_id)
+                    return filings_497k[i]
+        except Exception as exc:
+            logger.debug(
+                "Error inspecting 497K filing %d share classes for %s: %s",
+                i, ticker, exc,
+            )
+            continue
+
+    # Pass 3: HTML substring fallback (bounded).
+    for i in range(bound):
         try:
             html = filings_497k[i].html()
-            if ticker_upper in html:
+            if html and ticker_upper in html:
+                _cache_hit(cache, ticker_upper, filings_497k[i], target_class_id)
                 return filings_497k[i]
         except Exception as exc:
-            logger.debug("Error searching 497K filing %d for %s: %s", i, ticker, exc)
+            logger.debug(
+                "Error searching 497K filing %d HTML for %s: %s",
+                i, ticker, exc,
+            )
             continue
+    # Record a negative result so repeated resolver calls for the same
+    # ticker inside a single bottom-up decomposition do not each repeat
+    # the exhaustive scan.
+    try:
+        cache.store_not_found(ticker_upper)
+    except Exception as exc:
+        logger.debug(
+            "find_filing_for_ticker failed to record not-found for %s: %s",
+            ticker_upper, exc,
+        )
     return None
+
+
+def _cache_hit(cache, ticker_upper: str, filing, class_id: Optional[str]) -> None:
+    """Record a successful resolution so future calls skip the expensive pass."""
+    try:
+        accession = getattr(filing, "accession_number", None)
+        if accession:
+            cache.store(ticker_upper, accession, class_id)
+    except Exception as exc:
+        logger.debug(
+            "find_filing_for_ticker failed to cache %s: %s",
+            ticker_upper, exc,
+        )
