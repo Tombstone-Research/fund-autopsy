@@ -85,11 +85,52 @@ class NPortHolding:
     pct_of_net_assets: float | None = None
     asset_category: str | None = None
     issuer_category: str | None = None
+    investment_country: str | None = None  # ISO-2 country code from <invCountry>
 
     # Fund-of-funds detection
     is_registered_investment_company: bool = False
     underlying_cik: str | None = None
     underlying_ticker: str | None = None
+
+    # Derivatives (populated when assetCat is DE/DFE/DIR/DCR/DCO and
+    # the invstOrSec element carries a <derivativeInfo> subtree).
+    derivative_instrument_type: str | None = None  # fwdDeriv, swapDeriv, futrDeriv, optionSwaptionWarrantDeriv
+    notional_usd: float | None = None
+    counterparty_name: str | None = None
+    counterparty_lei: str | None = None
+    unrealized_appreciation_usd: float | None = None
+
+    @property
+    def is_derivative(self) -> bool:
+        """True when this holding is a derivative position.
+
+        N-PORT tags derivatives with an assetCat code beginning with 'D',
+        excluding 'DBT' which is plain corporate debt. Known derivative
+        codes: DE (equity), DFE (forward/FX), DIR (interest rate),
+        DCR (credit), DCO (commodity), DO (other).
+        """
+        if not self.asset_category:
+            return False
+        cat = self.asset_category.upper()
+        return cat.startswith("D") and cat != "DBT"
+
+    @property
+    def derivative_category(self) -> str | None:
+        """Human-readable derivative category derived from asset_category.
+
+        Returns None for non-derivative holdings.
+        """
+        if not self.is_derivative:
+            return None
+        mapping = {
+            "DE": "Equity",
+            "DFE": "Foreign Exchange / Forward",
+            "DIR": "Interest Rate",
+            "DCR": "Credit",
+            "DCO": "Commodity",
+            "DO": "Other",
+        }
+        return mapping.get(self.asset_category.upper(), self.asset_category)
 
 
 @dataclass
@@ -119,3 +160,98 @@ class NPortData:
             cat = holding.asset_category or "UNKNOWN"
             weights[cat] = weights.get(cat, 0.0) + (holding.pct_of_net_assets or 0.0)
         return weights
+
+    @property
+    def derivatives(self) -> list[NPortHolding]:
+        """Subset of holdings flagged as derivative positions."""
+        return [h for h in self.holdings if h.is_derivative]
+
+    @property
+    def distinct_derivative_categories(self) -> list[str]:
+        """Sorted list of distinct derivative category names the fund holds.
+
+        Thread 6 ('derivatives mismatch') reports this count as a
+        complexity signal against the fund's stated risk profile.
+        """
+        return sorted({
+            h.derivative_category
+            for h in self.derivatives
+            if h.derivative_category
+        })
+
+    @property
+    def distinct_derivative_instrument_types(self) -> list[str]:
+        """Sorted list of distinct derivative instrument types.
+
+        An instrument type is the N-PORT subtree kind — fwdDeriv,
+        swapDeriv, futrDeriv, optionSwaptionWarrantDeriv. A fund using
+        both swaps and options is running a more complex derivatives
+        program than a fund using only forwards.
+        """
+        return sorted({
+            h.derivative_instrument_type
+            for h in self.derivatives
+            if h.derivative_instrument_type
+        })
+
+    @property
+    def aggregate_derivative_notional_usd(self) -> float:
+        """Sum of notional amounts across all derivative holdings.
+
+        Notional is the face value the derivative is written against,
+        not the value of the position. A $10mm notional swap might have
+        a $500k market value. Notional is the right scale for a
+        'derivatives footprint' claim.
+        """
+        return sum(
+            (h.notional_usd or 0.0)
+            for h in self.derivatives
+        )
+
+    @property
+    def derivative_category_counts(self) -> dict[str, int]:
+        """Holding count per derivative category (Equity, Credit, etc.)."""
+        counts: dict[str, int] = {}
+        for h in self.derivatives:
+            cat = h.derivative_category or "Unknown"
+            counts[cat] = counts.get(cat, 0) + 1
+        return counts
+
+    def country_exposure_pct(self) -> dict[str, float]:
+        """Weight allocation by issuer country as % of net assets.
+
+        Uses the `<invCountry>` ISO-2 country code that N-PORT reports
+        per holding (this is the issuer's country, not necessarily the
+        country of risk or the trading venue). Sums `pct_of_net_assets`
+        across holdings grouped by country code. Holdings without a
+        country code bucket to 'UNKNOWN'. Returned dict is sorted
+        descending by weight.
+
+        Caveat: leveraged bond funds that run short positions report
+        negative `pctVal` for the short leg. Aggregating gross longs by
+        country can produce sums above 100% (PIMCO Total Return
+        reported 106% US exposure in its most recent N-PORT because
+        the fund's synthetic short book offsets some of the gross
+        long position elsewhere). This is legitimate — the output
+        measures gross issuer exposure, not net market exposure — but
+        a consumer of this metric should not interpret "US: 106%" as
+        leverage evidence without reading the fund's derivatives book.
+        """
+        exposure: dict[str, float] = {}
+        for h in self.holdings:
+            country = (h.investment_country or "UNKNOWN").strip().upper() or "UNKNOWN"
+            weight = h.pct_of_net_assets or 0.0
+            exposure[country] = exposure.get(country, 0.0) + weight
+        return dict(sorted(exposure.items(), key=lambda kv: -kv[1]))
+
+    def country_concentration_pct(self, top_n: int = 1) -> float:
+        """Concentration metric: weight share of the top-N countries.
+
+        A single-country fund (U.S. large-cap index) typically reads
+        >95% at top_n=1. A globally diversified fund might read 40-60%.
+        Useful as a sanity check against a prospectus that claims
+        'globally diversified' exposure.
+        """
+        exposure = self.country_exposure_pct()
+        values = list(exposure.values())[:top_n]
+        return sum(values)

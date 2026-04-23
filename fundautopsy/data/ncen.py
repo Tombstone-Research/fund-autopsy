@@ -72,12 +72,20 @@ class SecuritiesLendingData:
 
 @dataclass
 class DerivativeUsage:
-    """A single derivatives exposure category from N-CEN Item C.4.
+    """A single derivatives exposure category.
 
-    Each record represents one derivative type the fund transacted in
-    during the reporting period. Thread 6 ("derivatives mismatch") uses
-    the count of distinct types and aggregate notional to flag funds
-    whose derivative complexity is understated by the prospectus.
+    **Important note on data source, added 2026-04-23.** Form N-CEN does
+    NOT contain derivative usage data. A 2026-04-23 live scan of PIMCO
+    Total Return's N-CEN XML found zero derivative-related tags across
+    239 distinct element names. The `managementInvestmentQuestion`
+    section has 43 direct children covering operational structure,
+    service providers, securities lending, expense limits, and
+    principal transactions — but no derivatives disclosure. The parser's
+    `_parse_derivatives()` below returns an empty list in practice.
+    Derivative holdings live in Form N-PORT Item C (portfolio holdings)
+    instead, and future work on the "derivatives mismatch" analysis
+    angle should route through `fundautopsy/data/nport.py`, not this
+    module. The dataclass is retained for shape compatibility.
     """
 
     derivative_type: str  # e.g., "forwardCurrency", "future", "swap", "option"

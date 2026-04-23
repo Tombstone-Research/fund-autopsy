@@ -718,6 +718,30 @@ function renderDash(d) {
 
   // Deep Dive: Brokers
   let brokerHtml = '<div class="panel-header">Top Brokers by Commission</div>';
+
+  // Affiliated concentration metric: the single-number summary of
+  // the conflict. Rendered as a progress bar so users can see at a
+  // glance whether the fund routes trades through its own family.
+  if (d.affiliated_commission_pct !== undefined && d.affiliated_commission_pct !== null) {
+    const pct = d.affiliated_commission_pct;
+    const dollars = d.affiliated_commission_dollars || 0;
+    const barColor = pct >= 50 ? 'var(--red,#ef4444)'
+                    : pct >= 20 ? 'var(--yellow,#eab308)'
+                    : 'var(--green,#22c55e)';
+    brokerHtml += `<div style="margin:12px 0 16px 0;padding:12px 14px;background:var(--surface-2,#18181b);border-radius:10px;border:1px solid var(--border)">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px">
+        <span style="font-size:12px;color:var(--text-dim);text-transform:uppercase;letter-spacing:1px">Affiliated Commission Concentration</span>
+        <span style="font-size:14px;font-weight:600;color:${barColor}">${pct.toFixed(1)}%</span>
+      </div>
+      <div style="background:var(--border);height:6px;border-radius:3px;overflow:hidden">
+        <div style="background:${barColor};height:100%;width:${Math.min(pct, 100).toFixed(1)}%"></div>
+      </div>
+      <div style="font-size:11px;color:var(--text-dim);margin-top:6px">
+        $${formatNumber(dollars)} routed through broker-dealers affiliated with the fund adviser
+      </div>
+    </div>`;
+  }
+
   if (d.top_brokers && d.top_brokers.length) {
     d.top_brokers.slice(0, 10).forEach(b => {
       const affLabel = b.is_affiliated ? ' (AFFILIATED)' : '';
@@ -782,6 +806,9 @@ function renderDash(d) {
   document.getElementById('saiSection').style.display = 'none';
   document.getElementById('ncsrSection').style.display = 'none';
   document.getElementById('feeHistorySection').style.display = 'none';
+  document.getElementById('derivativesSection').style.display = 'none';
+  document.getElementById('geographySection').style.display = 'none';
+  document.getElementById('mergersSection').style.display = 'none';
 
   // Fetch supplementary data asynchronously (non-blocking)
   fetchSupplementaryData(d.ticker);
@@ -879,6 +906,9 @@ async function fetchSupplementaryData(ticker) {
   fetchSAI(ticker);
   fetchNCSR(ticker);
   fetchFeeHistory(ticker);
+  fetchDerivatives(ticker);
+  fetchGeography(ticker);
+  fetchMergers(ticker);
 }
 
 async function fetchSAI(ticker) {
@@ -944,11 +974,26 @@ async function fetchSAI(ticker) {
 
     if (data.soft_dollar_info) {
       const sd = data.soft_dollar_info;
+      const subsidy = data.soft_dollar_subsidy;
       html += `<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px 20px;margin-bottom:12px">
         <div style="font-weight:600;font-size:13px;color:var(--accent);margin-bottom:10px">Soft Dollar Arrangements</div>
         <div class="cost-row"><span class="cost-label">Soft Dollar Arrangements</span><span style="color:${sd.has_soft_dollar_arrangements ? 'var(--red)' : 'var(--green)'};font-weight:600">${sd.has_soft_dollar_arrangements ? 'Active' : 'None'}</span></div>
-        <div class="cost-row"><span class="cost-label">Commission Sharing</span><span style="color:${sd.uses_commission_sharing ? 'var(--yellow)' : 'var(--text-dim)'};font-weight:600">${sd.uses_commission_sharing ? 'Yes' : 'No'}</span></div>
-      </div>`;
+        <div class="cost-row"><span class="cost-label">Commission Sharing</span><span style="color:${sd.uses_commission_sharing ? 'var(--yellow)' : 'var(--text-dim)'};font-weight:600">${sd.uses_commission_sharing ? 'Yes' : 'No'}</span></div>`;
+      if (subsidy) {
+        if (subsidy.estimated_dollars) {
+          const bpsLabel = subsidy.estimated_bps ? ` (${subsidy.estimated_bps.toFixed(1)} bps of NAV)` : '';
+          html += `<div class="cost-row" style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border)">
+            <span class="cost-label">Research Subsidy (SAI disclosed)</span>
+            <span class="cost-val" style="color:var(--red);font-weight:600">$${formatNumber(subsidy.estimated_dollars)}${bpsLabel}</span>
+          </div>
+          <div style="font-size:11px;color:var(--text-dim);margin-top:6px;line-height:1.5">${subsidy.methodology}</div>`;
+        } else if (subsidy.has_disclosure) {
+          html += `<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border);font-size:11px;color:var(--text-dim);line-height:1.5">
+            <strong style="color:var(--yellow,#eab308)">Subsidy unquantifiable:</strong> ${subsidy.methodology}
+          </div>`;
+        }
+      }
+      html += `</div>`;
     }
 
     if (data.commissions && data.commissions.length > 0) {
@@ -1102,6 +1147,290 @@ async function fetchFeeHistory(ticker) {
 
     content.innerHTML = html;
   } catch (e) { /* Fee history is supplementary */ }
+}
+
+// ── Derivatives footprint (N-PORT Item C) ──
+
+async function fetchDerivatives(ticker) {
+  const section = document.getElementById('derivativesSection');
+  const content = document.getElementById('derivativesContent');
+  section.style.display = 'none';
+
+  try {
+    const resp = await fetch(`/api/derivatives/${ticker}`);
+    if (!resp.ok) return;
+    const d = await resp.json();
+
+    const count = d.derivative_positions_count || 0;
+    if (count === 0) {
+      // No derivatives — surface a positive finding rather than a panel
+      addFinding('✓', 'Derivatives:', 'None reported on most recent N-PORT', 'green');
+      return;
+    }
+
+    // ── X-Ray verdict chip: flag counterparty concentration when any
+    //    single dealer holds > 50% of aggregate notional. That is a
+    //    legitimate concentration signal even for index funds.
+    const top = d.top_counterparties_by_notional || [];
+    const aggregate = d.aggregate_notional_usd || 0;
+    let concentrationPct = 0;
+    if (top.length > 0 && aggregate > 0) {
+      concentrationPct = (top[0].aggregate_notional_usd / aggregate) * 100;
+    }
+
+    const nCats = (d.distinct_derivative_categories || []).length;
+    const nInstr = (d.distinct_instrument_types || []).length;
+    const notionalPct = d.notional_pct_of_nav;
+
+    if (concentrationPct >= 50) {
+      addFinding(
+        '⚠',
+        'Derivatives:',
+        `${count} position${count === 1 ? '' : 's'} — ${top[0].name} is ${concentrationPct.toFixed(0)}% of notional`,
+        'yellow',
+      );
+    } else if (notionalPct && notionalPct >= 5) {
+      addFinding(
+        '⚠',
+        'Derivatives:',
+        `${count} positions totaling ${notionalPct.toFixed(1)}% of NAV notional`,
+        'yellow',
+      );
+    } else {
+      addFinding(
+        '○',
+        'Derivatives:',
+        `${count} position${count === 1 ? '' : 's'} across ${nCats} categor${nCats === 1 ? 'y' : 'ies'}`,
+        'neutral',
+      );
+    }
+
+    // ── Deep Dive panel ──
+    section.style.display = 'block';
+
+    let html = '';
+    html += `<div class="cost-row">
+      <span class="cost-label">Positions reported</span>
+      <span class="cost-val">${count.toLocaleString()}</span>
+    </div>`;
+    html += `<div class="cost-row">
+      <span class="cost-label">Aggregate notional (USD)</span>
+      <span class="cost-val">$${formatNumber(aggregate)}</span>
+    </div>`;
+    if (notionalPct !== null && notionalPct !== undefined) {
+      html += `<div class="cost-row">
+        <span class="cost-label">Notional as % of NAV</span>
+        <span class="cost-val">${notionalPct.toFixed(2)}%</span>
+      </div>`;
+    }
+    const unrealized = d.unrealized_appreciation_total_usd || 0;
+    if (unrealized !== 0) {
+      const color = unrealized >= 0 ? 'var(--green)' : 'var(--red)';
+      const sign = unrealized >= 0 ? '+' : '−';
+      html += `<div class="cost-row">
+        <span class="cost-label">Unrealized mark-to-market</span>
+        <span class="cost-val" style="color:${color}">${sign}$${formatNumber(Math.abs(unrealized))}</span>
+      </div>`;
+    }
+
+    // Category breakdown
+    const catCounts = d.category_counts || {};
+    const catEntries = Object.entries(catCounts).sort((a, b) => b[1] - a[1]);
+    if (catEntries.length > 0) {
+      html += `<div style="margin-top:14px;padding-top:10px;border-top:1px solid var(--border)">
+        <div style="font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">Category Breakdown</div>`;
+      catEntries.forEach(([cat, n]) => {
+        html += `<div class="cost-row">
+          <span class="cost-label">${cat}</span>
+          <span class="cost-val">${n} position${n === 1 ? '' : 's'}</span>
+        </div>`;
+      });
+      html += `</div>`;
+    }
+
+    // Instrument type list
+    const instr = d.distinct_instrument_types || [];
+    if (instr.length > 0) {
+      const instrLabels = instr.map(t => ({
+        fwdDeriv: 'Forwards',
+        swapDeriv: 'Swaps',
+        futrDeriv: 'Futures',
+        optionSwaptionWarrantDeriv: 'Options / Swaptions / Warrants',
+        otherDeriv: 'Other',
+      }[t] || t)).join(', ');
+      html += `<div style="margin-top:10px;font-size:12px;color:var(--text-dim)">
+        <strong style="color:var(--text)">Instrument types used:</strong> ${instrLabels}
+      </div>`;
+    }
+
+    // Top counterparties
+    if (top.length > 0) {
+      html += `<div style="margin-top:14px;padding-top:10px;border-top:1px solid var(--border)">
+        <div style="font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">Top Counterparties by Notional</div>`;
+      top.slice(0, 5).forEach(cp => {
+        const pct = aggregate > 0 ? (cp.aggregate_notional_usd / aggregate * 100) : 0;
+        const bold = pct >= 50 ? 'font-weight:600;color:var(--yellow,#eab308)' : '';
+        html += `<div class="cost-row" style="${bold}">
+          <span class="cost-label">${cp.name}</span>
+          <span class="cost-val">$${formatNumber(cp.aggregate_notional_usd)} <span style="color:var(--text-dim);font-weight:400">(${pct.toFixed(1)}%)</span></span>
+        </div>`;
+      });
+      html += `</div>`;
+    }
+
+    if (d.reporting_period_end) {
+      html += `<div style="margin-top:14px;font-size:11px;color:var(--text-dim)">
+        Source: N-PORT as of ${d.reporting_period_end}.
+      </div>`;
+    }
+
+    content.innerHTML = html;
+  } catch (e) { /* Derivatives is supplementary */ }
+}
+
+// ── Geographic exposure (N-PORT invCountry aggregate) ──
+
+async function fetchGeography(ticker) {
+  const section = document.getElementById('geographySection');
+  const content = document.getElementById('geographyContent');
+  section.style.display = 'none';
+
+  try {
+    const resp = await fetch(`/api/geography/${ticker}`);
+    if (!resp.ok) return;
+    const d = await resp.json();
+
+    const top = d.top_countries || [];
+    if (top.length === 0) return;
+
+    // X-Ray finding: single-country concentration > 95% is typical for
+    // a U.S. index fund; between 70-95% is a developed-markets tilt.
+    // Below 50% implies genuine global diversification. Call this out.
+    const topPct = d.top_country_pct || 0;
+    const topCountry = top[0]?.country;
+    const nCountries = d.distinct_countries || 0;
+    if (topPct >= 95) {
+      addFinding('🌐', 'Geography:', `${topPct.toFixed(0)}% ${topCountry} — single-country`, 'neutral');
+    } else if (topPct >= 70) {
+      addFinding('🌐', 'Geography:', `${topPct.toFixed(0)}% ${topCountry} — home-bias`, 'neutral');
+    } else {
+      addFinding('🌐', 'Geography:', `${nCountries} countries — diversified`, 'green');
+    }
+
+    section.style.display = 'block';
+
+    let html = '';
+    html += `<div class="cost-row">
+      <span class="cost-label">Distinct countries</span>
+      <span class="cost-val">${nCountries}</span>
+    </div>`;
+    html += `<div class="cost-row">
+      <span class="cost-label">Top country concentration</span>
+      <span class="cost-val">${topPct.toFixed(2)}%</span>
+    </div>`;
+    if (topPct > 100) {
+      html += `<div style="font-size:11px;color:var(--yellow,#eab308);margin-top:-4px;margin-bottom:8px;padding:6px 10px;background:rgba(234,179,8,0.08);border-radius:6px">
+        Note: gross issuer exposure above 100% reflects synthetic short positions offsetting long holdings elsewhere. This is a gross-long view, not net market exposure. Common in leveraged bond funds.
+      </div>`;
+    }
+    if (d.top_5_countries_pct !== undefined) {
+      html += `<div class="cost-row">
+        <span class="cost-label">Top 5 countries</span>
+        <span class="cost-val">${d.top_5_countries_pct.toFixed(2)}%</span>
+      </div>`;
+    }
+    if (d.non_us_excluding_unknown_pct !== undefined) {
+      html += `<div class="cost-row">
+        <span class="cost-label">Non-US exposure</span>
+        <span class="cost-val">${d.non_us_excluding_unknown_pct.toFixed(2)}%</span>
+      </div>`;
+    }
+
+    html += `<div style="margin-top:14px;padding-top:10px;border-top:1px solid var(--border)">
+      <div style="font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">Top Countries by Weight</div>`;
+    top.slice(0, 10).forEach(c => {
+      html += `<div class="cost-row">
+        <span class="cost-label">${c.country}</span>
+        <span class="cost-val">${c.weight_pct.toFixed(2)}%</span>
+      </div>`;
+    });
+    html += `</div>`;
+
+    if (d.reporting_period_end) {
+      html += `<div style="margin-top:14px;font-size:11px;color:var(--text-dim)">
+        Source: N-PORT as of ${d.reporting_period_end}.
+      </div>`;
+    }
+
+    content.innerHTML = html;
+  } catch (e) { /* Geography is supplementary */ }
+}
+
+// ── Mergers / Reorganizations (Form N-14) ──
+
+async function fetchMergers(ticker) {
+  const section = document.getElementById('mergersSection');
+  const content = document.getElementById('mergersContent');
+  section.style.display = 'none';
+
+  try {
+    const resp = await fetch(`/api/mergers/${ticker}`);
+    if (!resp.ok) return;
+    const d = await resp.json();
+
+    if (!d.filings || d.filings.length === 0) {
+      // Quiet case — no N-14 on file. Don't clutter the Deep Dive.
+      return;
+    }
+
+    // X-Ray finding: any active N-14 is worth surfacing. A shareholder
+    // about to vote on a reorganization should know the tool saw it.
+    addFinding(
+      '⚠',
+      'Mergers:',
+      `${d.filings.length} N-14 filing${d.filings.length === 1 ? '' : 's'} in the trust`,
+      'yellow',
+    );
+
+    section.style.display = 'block';
+
+    let html = '';
+    d.filings.forEach(f => {
+      const classLabel = {
+        'same-complex': 'Same-complex consolidation',
+        'cross-complex': 'Cross-complex merger',
+        'partial': 'Reorganization (partial info)',
+        'unknown': 'Reorganization',
+      }[f.reorganization_type] || 'Reorganization';
+
+      html += `<div style="margin-bottom:18px;padding-bottom:14px;border-bottom:1px solid var(--border)">
+        <div style="display:flex;justify-content:space-between;align-items:baseline">
+          <div style="font-weight:600;font-size:13px">${classLabel}</div>
+          <div style="font-size:11px;color:var(--text-dim)">${f.filing_date} · ${f.form_type}</div>
+        </div>
+        <div style="font-size:12px;color:var(--text-dim);margin-top:4px">${f.company_name}</div>`;
+      if (f.target_fund_names && f.target_fund_names.length > 0) {
+        html += `<div style="font-size:12px;margin-top:8px">
+          <span style="color:var(--text-dim)">Target fund${f.target_fund_names.length === 1 ? '' : 's'}:</span>
+          ${f.target_fund_names.map(n => `<span style="color:var(--text)">${n}</span>`).join(', ')}
+        </div>`;
+      }
+      if (f.acquiring_fund_names && f.acquiring_fund_names.length > 0) {
+        html += `<div style="font-size:12px;margin-top:4px">
+          <span style="color:var(--text-dim)">Acquiring fund${f.acquiring_fund_names.length === 1 ? '' : 's'}:</span>
+          ${f.acquiring_fund_names.map(n => `<span style="color:var(--text)">${n}</span>`).join(', ')}
+        </div>`;
+      }
+      if (f.summary_snippet) {
+        html += `<div style="font-size:12px;color:var(--text-dim);margin-top:8px;font-style:italic">"${f.summary_snippet}"</div>`;
+      }
+      html += `<div style="margin-top:8px">
+        <a href="${f.filing_url}" target="_blank" rel="noopener" style="font-size:12px;color:var(--link,#60a5fa)">Open filing on EDGAR →</a>
+      </div></div>`;
+    });
+
+    content.innerHTML = html;
+  } catch (e) { /* Mergers is supplementary */ }
 }
 
 function formatNumber(n) {

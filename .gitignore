@@ -84,3 +84,6 @@ content/
 
 # Mypy cache
 .mypy_cache/
+
+# Local identifier-leak scanner patterns (see scripts/check_pseudonymity.sh)
+scripts/.pseudonymity_patterns

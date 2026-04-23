@@ -181,6 +181,52 @@ def _request_with_retry(
     raise httpx.TransportError(f"EDGAR request failed after {MAX_RETRIES} attempts: {url}")
 
 
+import time as _time
+
+# In-memory TTL cache on (ticker → MutualFundIdentifier).
+# The SEC's share-class mapping is effectively stable; a new filing
+# can cause a new class to appear but existing mappings do not change
+# within a day. One-day TTL is safe and collapses the p95 latency on
+# heavy umbrella trusts (walker path was measured at 186 s for LPRAX
+# and 60 s for FIPFX on 2026-04-22). On cache hit the function
+# returns in microseconds.
+#
+# Cache value is (MutualFundIdentifier|None, epoch_seconds). Negative
+# cache entries (None) are kept at a shorter TTL so that newly-listed
+# tickers resolve within ~1 hour of becoming valid.
+_RESOLVE_CACHE: dict[str, tuple[Optional["MutualFundIdentifier"], float]] = {}
+_RESOLVE_CACHE_TTL_HIT_SEC = 86400.0   # 24 hours for successful resolutions
+_RESOLVE_CACHE_TTL_MISS_SEC = 3600.0   # 1 hour for negative cache entries
+
+
+def _resolve_cache_get(ticker_upper: str) -> Optional[tuple[Optional["MutualFundIdentifier"], bool]]:
+    """Return (value, hit) or None if no valid cache entry exists.
+
+    Valid = within TTL for the success/miss kind that was stored.
+    """
+    entry = _RESOLVE_CACHE.get(ticker_upper)
+    if entry is None:
+        return None
+    value, cached_at = entry
+    ttl = _RESOLVE_CACHE_TTL_HIT_SEC if value is not None else _RESOLVE_CACHE_TTL_MISS_SEC
+    if _time.time() - cached_at > ttl:
+        return None
+    return value, True
+
+
+def _resolve_cache_put(
+    ticker_upper: str,
+    value: Optional["MutualFundIdentifier"],
+) -> None:
+    """Insert or refresh a cache entry."""
+    _RESOLVE_CACHE[ticker_upper] = (value, _time.time())
+
+
+def clear_resolve_cache() -> None:
+    """Drop every cached resolution. For use in tests and admin hooks."""
+    _RESOLVE_CACHE.clear()
+
+
 def resolve_ticker(ticker: str, client: Optional[httpx.Client] = None) -> Optional[MutualFundIdentifier]:
     """Resolve a mutual fund ticker to CIK, series ID, and class ID.
 
@@ -192,6 +238,9 @@ def resolve_ticker(ticker: str, client: Optional[httpx.Client] = None) -> Option
     Investment Company Act filings walker that finds the class by its
     SGML header under the trust's recent 485BPOS / N-CEN feed.
 
+    Results are cached in-memory with a 24-hour TTL on success and a
+    1-hour TTL on misses. See `clear_resolve_cache()` to force refresh.
+
     Args:
         ticker: Fund ticker symbol (e.g., "AGTHX").
         client: Optional httpx client (creates one if not provided).
@@ -199,6 +248,13 @@ def resolve_ticker(ticker: str, client: Optional[httpx.Client] = None) -> Option
     Returns:
         MutualFundIdentifier if found, None otherwise.
     """
+    ticker_upper: str = ticker.upper()
+
+    cached = _resolve_cache_get(ticker_upper)
+    if cached is not None:
+        value, _hit = cached
+        return value
+
     own_client: bool = client is None
     if own_client:
         client = get_edgar_client()
@@ -208,16 +264,17 @@ def resolve_ticker(ticker: str, client: Optional[httpx.Client] = None) -> Option
         data: dict = resp.json()
 
         # Structure: {"fields": ["cik","seriesId","classId","symbol"], "data": [[...], ...]}
-        ticker_upper: str = ticker.upper()
         for row in data["data"]:
             cik, series_id, class_id, symbol = row
             if symbol and symbol.upper() == ticker_upper:
-                return MutualFundIdentifier(
+                result = MutualFundIdentifier(
                     ticker=ticker_upper,
                     cik=cik,
                     series_id=series_id,
                     class_id=class_id,
                 )
+                _resolve_cache_put(ticker_upper, result)
+                return result
 
         # MF-universe miss. Deferred import avoids a circular dependency
         # at module-load time — icf_walker imports MutualFundIdentifier
@@ -230,7 +287,10 @@ def resolve_ticker(ticker: str, client: Optional[httpx.Client] = None) -> Option
                 "cik=%s series=%s class=%s",
                 ticker_upper, walker_hit.cik, walker_hit.series_id, walker_hit.class_id,
             )
+            _resolve_cache_put(ticker_upper, walker_hit)
             return walker_hit
+
+        _resolve_cache_put(ticker_upper, None)
         return None
     finally:
         if own_client:

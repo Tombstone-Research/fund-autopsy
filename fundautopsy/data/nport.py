@@ -212,6 +212,7 @@ def _parse_holding(inv: etree._Element) -> Optional[NPortHolding]:
     holding.cusip = _text(inv, "cusip") or None
     holding.asset_category = _text(inv, "assetCat") or None
     holding.issuer_category = _text(inv, "issuerCat") or None
+    holding.investment_country = _text(inv, "invCountry") or None
 
     # ISIN from identifiers block (normalize to None for missing)
     isin_elem = inv.find(".//n:isin", NPORT_NS)
@@ -241,7 +242,115 @@ def _parse_holding(inv: etree._Element) -> Optional[NPortHolding]:
         except ValueError:
             pass
 
+    # Derivative subtree extraction. N-PORT tags derivative positions
+    # with a <derivativeInfo> child whose first typed subtree identifies
+    # the instrument shape (fwdDeriv, swapDeriv, futrDeriv, or
+    # optionSwaptionWarrantDeriv). We read notional, counterparty, and
+    # unrealized appreciation from whichever subtree is present. Only
+    # triggered when is_derivative is True to keep the scan cheap on
+    # equity funds.
+    if holding.is_derivative:
+        _populate_derivative_fields(inv, holding)
+
     return holding
+
+
+# Instrument-type subtrees per N-PORT XSD. The key is the child tag
+# name; the value is a (notional_field, counterparty_parent) hint used
+# to pull the structured fields.
+_DERIV_SUBTREE_TAGS = (
+    "fwdDeriv",
+    "swapDeriv",
+    "futrDeriv",
+    "optionSwaptionWarrantDeriv",
+    "otherDeriv",
+)
+
+
+def _populate_derivative_fields(
+    inv: etree._Element,
+    holding,
+) -> None:
+    """Fill holding's derivative_* fields from the invstOrSec subtree.
+
+    Notional extraction is instrument-specific. Swaps and futures carry
+    an explicit <notionalAmt>. Forwards report both buy and sell
+    currency amounts and we take the sell-side as the canonical face
+    value (gross exposure). Options and others may use different
+    conventions and we fall back to any <notionalAmt> we can find.
+    """
+    deriv_info = inv.find(".//n:derivativeInfo", NPORT_NS)
+    if deriv_info is None:
+        return
+
+    # Locate the instrument type — the first typed child of derivativeInfo
+    instrument = None
+    for child in deriv_info:
+        child_tag = etree.QName(child).localname
+        if child_tag in _DERIV_SUBTREE_TAGS:
+            instrument = child
+            holding.derivative_instrument_type = child_tag
+            break
+    if instrument is None:
+        return
+
+    # Counterparty is nested under <counterpartyInfo> or directly under
+    # the instrument subtree; either name or LEI may appear alone.
+    cp = instrument.find(".//n:counterpartyName", NPORT_NS)
+    if cp is None:
+        cp = instrument.find(".//n:counterpartyName", NPORT_NS)
+    if cp is not None and cp.text:
+        holding.counterparty_name = cp.text.strip()
+    cp_lei = instrument.find(".//n:counterpartyLei", NPORT_NS)
+    if cp_lei is not None and cp_lei.text:
+        holding.counterparty_lei = cp_lei.text.strip()
+
+    # Notional extraction by instrument type.
+    tag = holding.derivative_instrument_type
+    notional = None
+    if tag == "fwdDeriv":
+        # Forwards carry sold vs purchased amounts in two currencies;
+        # the sold amount converted to USD is the cleanest face value
+        # for aggregation purposes. When both are in USD they match.
+        amt_sold = _float(instrument, "amtCurSold")
+        if amt_sold is not None:
+            cur_sold = _text(instrument, "curSold")
+            if cur_sold == "USD":
+                notional = abs(amt_sold)
+    else:
+        # Swaps, futures, options, others all carry <notionalAmt> as
+        # the face-value field. Currency is <curCd>; we only accept
+        # USD for the aggregate-notional metric to avoid mixing
+        # units. Non-USD notionals are captured as None; the
+        # raw invstOrSec still contains them for later work.
+        notional_elem = instrument.find(".//n:notionalAmt", NPORT_NS)
+        if notional_elem is not None and notional_elem.text:
+            try:
+                notional_raw = float(notional_elem.text.strip())
+                cur_cd = _text(instrument, "curCd")
+                if not cur_cd or cur_cd == "USD":
+                    notional = abs(notional_raw)
+            except ValueError:
+                pass
+
+    if notional is not None:
+        holding.notional_usd = notional
+
+    # Unrealized appreciation is a uniform field across instruments
+    unreal = _float(instrument, "unrealizedAppr")
+    if unreal is not None:
+        holding.unrealized_appreciation_usd = unreal
+
+
+def _float(elem: etree._Element, child_tag: str) -> Optional[float]:
+    """Return the float value of a direct-child element, or None."""
+    child = elem.find(f"n:{child_tag}", NPORT_NS)
+    if child is None or not child.text:
+        return None
+    try:
+        return float(child.text.strip())
+    except ValueError:
+        return None
 
 
 def detect_fund_holdings(nport: NPortData) -> list[NPortHolding]:

@@ -203,6 +203,21 @@ class FundAnalysis(BaseModel):
     # see the 4-9 funds hidden behind one ticker.
     underlying_funds: List[UnderlyingFund] = []
     conflict_flags: List[str] = []
+    # Affiliated-broker commission concentration — the share of total
+    # brokerage commissions that went to broker-dealers affiliated with
+    # the fund adviser. A structural signal of conflict intensity that
+    # investors currently have no way to see without reading the SAI.
+    # Zero for single-firm advisers with no affiliated broker; can run
+    # above 50% for large integrated asset managers (Fidelity, Charles
+    # Schwab) that execute through their own brokerage arms.
+    affiliated_commission_pct: Optional[float] = None
+    affiliated_commission_dollars: Optional[float] = None
+    # Soft-dollar subsidy estimate, computed from N-CEN + SAI when
+    # both are available. Dollars of commission paying for research
+    # the adviser would otherwise pay out of pocket. Tagged as
+    # estimate to distinguish from directly-reported figures.
+    soft_dollar_subsidy_estimate_dollars: Optional[float] = None
+    soft_dollar_subsidy_estimate_bps: Optional[float] = None
     data_notes: List[str]
     edgar_status: Optional[str] = None  # "ok" | "degraded" — subtle flakiness indicator
     generated: str
@@ -624,14 +639,18 @@ def analyze_fund(ticker: str):
 
     # --- Build conflict flags from N-CEN data ---
     conflict_flags = []
+    affiliated_commission_pct: Optional[float] = None
+    affiliated_commission_dollars: Optional[float] = None
     if ncen_full is not None:
         if ncen_full.is_brokerage_research_payment:
             conflict_flags.append("Soft dollar arrangements: fund pays inflated commissions for manager's research")
         if ncen_full.affiliated_brokers:
             aff_total = sum(b.gross_commission for b in ncen_full.affiliated_brokers)
+            affiliated_commission_dollars = aff_total
             agg = ncen_full.aggregate_commission
             if agg and agg > 0:
                 aff_pct = aff_total / agg * 100
+                affiliated_commission_pct = aff_pct
                 conflict_flags.append(
                     f"Affiliated broker usage: {len(ncen_full.affiliated_brokers)} affiliated broker(s), "
                     f"${aff_total:,.0f} in commissions ({aff_pct:.1f}% of total)"
@@ -713,6 +732,17 @@ def analyze_fund(ticker: str):
         asset_mix=mix_list,
         underlying_funds=underlying_funds_list,
         conflict_flags=conflict_flags,
+        affiliated_commission_pct=(
+            round(affiliated_commission_pct, 2)
+            if affiliated_commission_pct is not None else None
+        ),
+        affiliated_commission_dollars=affiliated_commission_dollars,
+        # Soft-dollar subsidy is computed in the SAI endpoint because
+        # it requires the SAI fetch; leaving it unset here keeps the
+        # main /api/analyze call fast. Callers that want the estimate
+        # should read /api/sai/{ticker}.
+        soft_dollar_subsidy_estimate_dollars=None,
+        soft_dollar_subsidy_estimate_bps=None,
         data_notes=tree.data_notes,
         edgar_status=edgar_status,
         generated=str(date.today()),
@@ -748,6 +778,27 @@ class SAISoftDollar(BaseModel):
     description: str
 
 
+class SoftDollarSubsidy(BaseModel):
+    """Computed estimate of the soft-dollar subsidy the fund's
+    shareholders pay toward the adviser's research bill.
+
+    Method:
+      - If the SAI breaks out research commissions per year, we sum
+        the most recent year's figure and treat that as the subsidy.
+        This is the directly-disclosed number.
+      - If only the boolean soft-dollar flag is present (no dollar
+        breakdown), we return None for both dollar and bps estimates.
+        No fabrication.
+
+    The bps figure converts dollars to basis points against the
+    fund's most recent net assets from N-PORT when available.
+    """
+    estimated_dollars: Optional[float] = None
+    estimated_bps: Optional[float] = None
+    methodology: str = ""
+    has_disclosure: bool = False
+
+
 class SAIAnalysis(BaseModel):
     """Complete SAI (Statement of Additional Information) analysis."""
     cik: int
@@ -756,6 +807,7 @@ class SAIAnalysis(BaseModel):
     commissions: List[SAICommission]
     pm_compensation: Optional[SAIPMCompensation]
     soft_dollar_info: Optional[SAISoftDollar]
+    soft_dollar_subsidy: Optional[SoftDollarSubsidy] = None
     conflict_flags: List[str]
 
 
@@ -831,6 +883,71 @@ def analyze_sai(ticker: str):
                 description=sd.description,
             )
 
+        # Compute soft-dollar subsidy estimate when SAI breaks out
+        # research commissions directly. The subsidy number is the
+        # most recent year's research-commission total across all
+        # funds in the SAI (most SAIs aggregate at the trust level).
+        # Convert to basis points using the analyzed fund's N-PORT
+        # net assets when we can fetch them cheaply.
+        subsidy = None
+        recent_research_total = 0.0
+        recent_year = None
+        for bc in result.commissions:
+            if bc.soft_dollar_commissions:
+                # dict[int -> float], year -> dollars. Take the most recent year.
+                latest_year = max(bc.soft_dollar_commissions.keys())
+                recent_research_total += bc.soft_dollar_commissions[latest_year]
+                if recent_year is None or latest_year > recent_year:
+                    recent_year = latest_year
+
+        has_soft_dollar = (
+            result.soft_dollar_info is not None
+            and result.soft_dollar_info.has_soft_dollar_arrangements
+        )
+        if recent_research_total > 0:
+            # Fetch NAV cheaply for the bps conversion — reuses
+            # the cached resolve_ticker path. NAV fetch failure
+            # is non-fatal; we still return the dollar figure.
+            bps = None
+            try:
+                from fundautopsy.data.edgar import MutualFundIdentifier
+                from fundautopsy.data.nport import retrieve_nport
+                mfid = MutualFundIdentifier(
+                    ticker=ticker, cik=int(fund.cik),
+                    series_id=fund.series_id, class_id=fund.class_id,
+                )
+                n = retrieve_nport(mfid)
+                if n and n.total_net_assets and n.total_net_assets > 0:
+                    bps = recent_research_total / n.total_net_assets * 10_000
+            except Exception:
+                bps = None
+            subsidy = SoftDollarSubsidy(
+                estimated_dollars=recent_research_total,
+                estimated_bps=round(bps, 2) if bps is not None else None,
+                methodology=(
+                    f"Sum of SAI-disclosed research commissions for {recent_year}, "
+                    "converted to basis points against the fund's most recent "
+                    "N-PORT net assets."
+                ),
+                has_disclosure=True,
+            )
+            if bps and bps > 1.0:
+                flags.append(
+                    f"Soft-dollar subsidy ≈ ${recent_research_total:,.0f} "
+                    f"({bps:.1f} bps) — research the adviser would otherwise pay for"
+                )
+        elif has_soft_dollar:
+            subsidy = SoftDollarSubsidy(
+                estimated_dollars=None,
+                estimated_bps=None,
+                methodology=(
+                    "Fund acknowledges soft-dollar arrangements in SAI but "
+                    "does not disclose dollar amounts. Subsidy cannot be "
+                    "quantified without additional data."
+                ),
+                has_disclosure=True,
+            )
+
         return SAIAnalysis(
             cik=result.cik,
             filing_date=result.filing_date,
@@ -838,6 +955,7 @@ def analyze_sai(ticker: str):
             commissions=commissions,
             pm_compensation=pm_comp,
             soft_dollar_info=sd_info,
+            soft_dollar_subsidy=subsidy,
             conflict_flags=flags,
         )
 
@@ -995,6 +1113,237 @@ def analyze_ncsr(ticker: str):
     except Exception as e:
         logger.exception("N-CSR analysis failed for %s", ticker)
         raise HTTPException(500, "N-CSR analysis failed due to an internal error")
+
+
+@app.get("/api/derivatives/{ticker}")
+def analyze_derivatives(ticker: str):
+    """Return the fund's derivative positions aggregated from N-PORT Item C.
+
+    Breakdown of distinct derivative categories (equity, interest rate,
+    credit, FX/forward, commodity, other), instrument type counts
+    (swap, future, forward, option/swaption/warrant), aggregate USD
+    notional across the derivative book, and the top counterparties
+    by notional weight.
+
+    The aggregate notional is the sum of USD-denominated notional
+    amounts across all derivative positions. Non-USD notionals are
+    captured per-position but excluded from the aggregate because
+    the cross-currency FX mark would introduce a reporting
+    distortion against USD fund NAV. Notional is face value, not
+    market value — a $1B notional interest-rate swap might have a
+    $5M market exposure.
+    """
+    ticker = ticker.strip().upper()
+    if not ticker or not ticker.isalpha() or len(ticker) > 6:
+        raise HTTPException(400, "Invalid ticker format")
+
+    try:
+        from fundautopsy.core.fund import identify_fund
+        from fundautopsy.data.edgar import MutualFundIdentifier
+        from fundautopsy.data.nport import retrieve_nport
+
+        fund = identify_fund(ticker)
+        mfid = MutualFundIdentifier(
+            ticker=ticker,
+            cik=int(fund.cik),
+            series_id=fund.series_id,
+            class_id=fund.class_id,
+        )
+        nport = retrieve_nport(mfid)
+
+        if nport is None:
+            raise HTTPException(
+                404, f"No N-PORT data available for {ticker}"
+            )
+
+        # Aggregate counterparty notional across derivatives. Top 10.
+        cp_notional: Dict[str, float] = {}
+        for d in nport.derivatives:
+            if d.counterparty_name and d.notional_usd:
+                key = d.counterparty_name
+                cp_notional[key] = cp_notional.get(key, 0.0) + d.notional_usd
+        top_counterparties = sorted(
+            cp_notional.items(), key=lambda kv: kv[1], reverse=True
+        )[:10]
+
+        # Notional intensity: derivative notional relative to fund NAV
+        nav = nport.total_net_assets or 0
+        notional_pct_of_nav = None
+        if nav and nav > 0:
+            notional_pct_of_nav = (
+                nport.aggregate_derivative_notional_usd / nav * 100
+            )
+
+        # Unrealized appreciation total — mark-to-market exposure
+        unrealized_total = sum(
+            (d.unrealized_appreciation_usd or 0.0)
+            for d in nport.derivatives
+        )
+
+        return {
+            "ticker": ticker,
+            "fund_name": fund.name,
+            "reporting_period_end": (
+                nport.reporting_period_end.isoformat()
+                if nport.reporting_period_end else None
+            ),
+            "filing_date": (
+                nport.filing_date.isoformat()
+                if nport.filing_date else None
+            ),
+            "total_net_assets_usd": nav,
+            "derivative_positions_count": len(nport.derivatives),
+            "distinct_derivative_categories": nport.distinct_derivative_categories,
+            "distinct_instrument_types": nport.distinct_derivative_instrument_types,
+            "aggregate_notional_usd": nport.aggregate_derivative_notional_usd,
+            "notional_pct_of_nav": notional_pct_of_nav,
+            "unrealized_appreciation_total_usd": unrealized_total,
+            "category_counts": nport.derivative_category_counts,
+            "top_counterparties_by_notional": [
+                {"name": name, "aggregate_notional_usd": notional}
+                for name, notional in top_counterparties
+            ],
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Derivatives analysis failed for %s", ticker)
+        raise HTTPException(
+            500, "Derivatives analysis failed due to an internal error"
+        )
+
+
+@app.get("/api/geography/{ticker}")
+def analyze_geography(ticker: str):
+    """Return the fund's country exposure from N-PORT holdings.
+
+    Aggregates the issuer country code (`<invCountry>`) across all
+    holdings, weighted by each holding's percentage of net assets.
+    This is the issuer's country rather than the country of risk or
+    the trading venue — a Cayman Islands shell for an emerging-markets
+    bond will report KY, not the underlying country of exposure.
+    Useful as a sanity check against a prospectus's diversification
+    claims.
+    """
+    ticker = ticker.strip().upper()
+    if not ticker or not ticker.isalpha() or len(ticker) > 6:
+        raise HTTPException(400, "Invalid ticker format")
+
+    try:
+        from fundautopsy.core.fund import identify_fund
+        from fundautopsy.data.edgar import MutualFundIdentifier
+        from fundautopsy.data.nport import retrieve_nport
+
+        fund = identify_fund(ticker)
+        mfid = MutualFundIdentifier(
+            ticker=ticker,
+            cik=int(fund.cik),
+            series_id=fund.series_id,
+            class_id=fund.class_id,
+        )
+        nport = retrieve_nport(mfid)
+        if nport is None:
+            raise HTTPException(
+                404, f"No N-PORT data available for {ticker}"
+            )
+
+        exposure = nport.country_exposure_pct()
+        top_1 = nport.country_concentration_pct(top_n=1)
+        top_5 = nport.country_concentration_pct(top_n=5)
+        non_us_pct = 100.0 - exposure.get("US", 0.0) - exposure.get("UNKNOWN", 0.0)
+
+        # Keep the response focused — top-20 countries plus aggregate buckets
+        top_countries = [
+            {"country": country, "weight_pct": round(weight, 4)}
+            for country, weight in list(exposure.items())[:20]
+        ]
+        return {
+            "ticker": ticker,
+            "fund_name": fund.name,
+            "reporting_period_end": (
+                nport.reporting_period_end.isoformat()
+                if nport.reporting_period_end else None
+            ),
+            "filing_date": (
+                nport.filing_date.isoformat()
+                if nport.filing_date else None
+            ),
+            "distinct_countries": len([c for c in exposure if c != "UNKNOWN"]),
+            "top_country_pct": round(top_1, 4),
+            "top_5_countries_pct": round(top_5, 4),
+            "non_us_excluding_unknown_pct": round(non_us_pct, 4),
+            "top_countries": top_countries,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Geography analysis failed for %s", ticker)
+        raise HTTPException(
+            500, "Geography analysis failed due to an internal error"
+        )
+
+
+@app.get("/api/mergers/{ticker}")
+def analyze_mergers(ticker: str):
+    """Return recent N-14 fund merger / reorganization filings for the trust.
+
+    N-14 is the SEC registration statement filed when an investment
+    company proposes to merge, reorganize, or exchange shares with
+    another fund. Each filing announces one or more reorganizations
+    and identifies target and acquirer funds. This endpoint surfaces
+    recent N-14 activity at the trust level, classifies same-complex
+    vs cross-complex reorganizations where the parser can infer them,
+    and returns the filing URLs for direct review.
+
+    Trust-level scope: an N-14 filed under an umbrella trust like
+    Fidelity Concord Street Trust may announce a merger affecting a
+    single series while the other hundred series inside the trust are
+    unaffected. A shareholder of one fund should still see any recent
+    N-14 that the trust has filed because it may touch their fund.
+    """
+    ticker = ticker.strip().upper()
+    if not ticker or not ticker.isalpha() or len(ticker) > 6:
+        raise HTTPException(400, "Invalid ticker format")
+
+    try:
+        from fundautopsy.core.fund import identify_fund
+        from fundautopsy.data.n14_parser import retrieve_n14_for_cik
+
+        fund = identify_fund(ticker)
+        filings = retrieve_n14_for_cik(int(fund.cik), max_filings=5, classify=True)
+
+        serialized = [
+            {
+                "accession_no": f.accession_no,
+                "filing_date": f.filing_date.isoformat(),
+                "form_type": f.form_type,
+                "company_name": f.company_name,
+                "filing_url": f.filing_url,
+                "reorganization_type": f.reorganization_type,
+                "target_fund_names": f.target_fund_names,
+                "acquiring_fund_names": f.acquiring_fund_names,
+                "summary_snippet": f.summary_snippet,
+            }
+            for f in filings
+        ]
+
+        return {
+            "ticker": ticker,
+            "fund_name": fund.name,
+            "cik": fund.cik,
+            "n14_filings_count": len(serialized),
+            "filings": serialized,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Mergers analysis failed for %s", ticker)
+        raise HTTPException(
+            500, "Mergers analysis failed due to an internal error"
+        )
 
 
 # --- Portfolio-level total cost of ownership rollup ---
