@@ -179,14 +179,24 @@ _FUND_NAME_RE = re.compile(
 )
 
 _TARGET_CUES = (
-    re.compile(r"\b(?:target|acquired|reorganizing)\s+fund", re.I),
-    re.compile(r"reorganization of\s+(?:the\s+)?([A-Z][^,.\n]{5,80}?Fund)\b"),
-    re.compile(r"(?:the\s+)?([A-Z][^,.\n]{5,80}?Fund)\s+(?:will be|is being)\s+reorganized\s+into", re.I),
+    # "X Fund will be reorganized into Y Fund"
+    re.compile(r"(?:the\s+)?([A-Z][A-Za-z0-9 &\.\-\/]{4,100}?Fund)\s+(?:will\s+be|is\s+being|shall\s+be)\s+(?:reorganized|acquired|merged)", re.I),
+    # "reorganization of the X Fund"
+    re.compile(r"reorganization\s+of\s+(?:the\s+)?([A-Z][A-Za-z0-9 &\.\-\/]{4,100}?Fund)\b", re.I),
+    # "X Fund (the 'Acquired Fund' or 'Target Fund')"
+    re.compile(r"([A-Z][A-Za-z0-9 &\.\-\/]{4,100}?Fund)\s*\(\s*(?:the\s+)?[\"\u201c]?(?:Acquired|Target)\s+Fund", re.I),
+    # "merger of X Fund with and into"
+    re.compile(r"merger\s+of\s+(?:the\s+)?([A-Z][A-Za-z0-9 &\.\-\/]{4,100}?Fund)\s+with\s+and\s+into", re.I),
 )
 _ACQUIRER_CUES = (
-    re.compile(r"\b(?:acquiring|surviving|successor)\s+fund", re.I),
-    re.compile(r"reorganized into\s+(?:the\s+)?([A-Z][^,.\n]{5,80}?Fund)\b"),
-    re.compile(r"shares of\s+(?:the\s+)?([A-Z][^,.\n]{5,80}?Fund)\s+will be", re.I),
+    # "reorganized into Y Fund" / "merged into Y Fund"
+    re.compile(r"(?:reorganized|merged|acquired)\s+(?:with\s+and\s+)?into\s+(?:the\s+)?([A-Z][A-Za-z0-9 &\.\-\/]{4,100}?Fund)\b", re.I),
+    # "shares of Y Fund will be issued"
+    re.compile(r"shares\s+of\s+(?:the\s+)?([A-Z][A-Za-z0-9 &\.\-\/]{4,100}?Fund)\s+(?:will\s+be|shall\s+be)\s+issued", re.I),
+    # "Y Fund (the 'Acquiring Fund' or 'Surviving Fund')"
+    re.compile(r"([A-Z][A-Za-z0-9 &\.\-\/]{4,100}?Fund)\s*\(\s*(?:the\s+)?[\"\u201c]?(?:Acquiring|Surviving|Successor)\s+Fund", re.I),
+    # "into Y Fund, a series of"
+    re.compile(r"into\s+(?:the\s+)?([A-Z][A-Za-z0-9 &\.\-\/]{4,100}?Fund),\s+a\s+series", re.I),
 )
 
 
@@ -255,19 +265,34 @@ def classify_reorganization(
     if m:
         filing.summary_snippet = m.group(0).strip()[:600]
 
-    # Classify
+    # Classify. Prefer specific labels over the fallback "unknown" so
+    # users see useful information even when regex extraction misses.
     filer = (filing.company_name or "").split()
     filer_root = filer[0].upper() if filer else ""
     if targets and acquirers:
-        both_match_filer = all(
-            filer_root and filer_root in n.upper()
-            for n in targets + acquirers
-        ) if filer_root else False
-        filing.reorganization_type = "same-complex" if both_match_filer else "cross-complex"
+        # Both sides identified — check if fund names share the filer
+        # root (suggesting same-complex consolidation) or diverge
+        # (suggesting cross-complex merger).
+        both_match_filer = (
+            filer_root
+            and all(filer_root in n.upper() for n in targets + acquirers)
+        )
+        filing.reorganization_type = (
+            "same-complex" if both_match_filer else "cross-complex"
+        )
     elif targets or acquirers:
         filing.reorganization_type = "partial"
+    elif filing.summary_snippet:
+        # We can see the filing discusses a reorganization but cannot
+        # cleanly extract target/acquirer names. Still useful to the
+        # shareholder — surface that there is a reorganization in
+        # flight rather than reporting "unknown."
+        filing.reorganization_type = "reorganization"
     else:
-        filing.reorganization_type = "unknown"
+        # Could not fetch filing body or body is opaque to our regex
+        # heuristics. Label as pending review rather than unknown so
+        # the UI does not surface "unknown" which reads as broken.
+        filing.reorganization_type = "filing-available"
 
     return filing
 

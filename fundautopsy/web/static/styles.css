@@ -1,3 +1,46 @@
+/* Fund Autopsy dashboard — Tombstone Research visual language. */
+
+/* ── Loading + error states for async panels ──────────────────────── */
+.panel-loading {
+  padding: 20px;
+  text-align: center;
+  color: #a1a1aa;
+  font-size: 12px;
+}
+.panel-loading::before {
+  content: "";
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  margin-right: 8px;
+  border: 2px solid #27272a;
+  border-top-color: #60a5fa;
+  border-radius: 50%;
+  animation: spin 0.9s linear infinite;
+  vertical-align: middle;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.panel-error {
+  padding: 16px;
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.08);
+  border: 1px solid rgba(239, 68, 68, 0.2);
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+/* ── Mobile responsive ─────────────────────────────────────────── */
+@media (max-width: 720px) {
+  .main { padding: 16px 12px !important; }
+  .topbar { padding: 12px 16px !important; flex-wrap: wrap; gap: 8px; }
+  .topbar-brand { font-size: 18px !important; }
+  .search-wrap { order: 3; width: 100%; }
+  .tab-bar { flex-wrap: wrap; }
+  .tab-btn { font-size: 12px; padding: 8px 10px; }
+  .cost-row { flex-direction: row; flex-wrap: wrap; }
+  table { font-size: 12px; }
+}
 
 :root {
   --bg: #08090d;

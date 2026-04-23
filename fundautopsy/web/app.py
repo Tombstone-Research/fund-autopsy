@@ -231,6 +231,61 @@ ASSET_CAT_META = {
     "OTHER": ("Other", "#94a3b8"),
 }
 
+# Well-known ETF and common-confusion tickers. A user who types any of
+# these instead of a mutual fund ticker gets a specific error message
+# rather than a generic 404. Keeping this list centralized so every
+# ticker-accepting endpoint can use the same detection.
+_KNOWN_ETF_TICKERS: frozenset[str] = frozenset({
+    "SPY", "QQQ", "VTI", "VOO", "IVV", "VEA", "VWO", "BND",
+    "AGG", "IEFA", "IEMG", "IJH", "IJR", "VUG", "VTV", "VGT",
+    "VNQ", "ARKK", "SOXX", "XLK", "XLF", "XLE", "XLV", "XLI",
+    "TQQQ", "SQQQ", "GLD", "SLV", "TLT", "IEF", "SHY",
+    "DIA", "IWM", "EFA", "EEM", "VIG", "VYM", "SCHD", "JEPI",
+    "JEPQ", "BIL", "SHV", "USFR", "MUB", "VTEB", "BSV", "VCIT",
+    "VCSH", "LQD", "HYG", "EMB", "FXI", "EWJ", "EWZ", "INDA",
+    "MCHI", "VXUS", "VT", "AOR", "AOM", "AOA", "BIV", "BLV",
+})
+
+_KNOWN_STOCKS: frozenset[str] = frozenset({
+    "AAPL", "MSFT", "GOOGL", "GOOG", "AMZN", "NVDA", "META",
+    "TSLA", "BRK", "BRKB", "UNH", "JNJ", "XOM", "JPM", "V",
+    "MA", "WMT", "PG", "HD", "BAC", "DIS", "NFLX", "CRM",
+})
+
+
+def _resolve_or_explain(ticker: str):
+    """Resolve a ticker to a fund, or raise an explicit HTTPException.
+
+    Provides graceful error paths for the three most common user
+    mistakes: (a) typing an ETF ticker, (b) typing a stock ticker,
+    (c) typing a ticker that does not exist anywhere. Each case
+    produces a 422 with a specific, actionable message rather than
+    a generic 404.
+    """
+    from fundautopsy.core.fund import identify_fund as _identify
+
+    t = ticker.upper().strip()
+    if t in _KNOWN_ETF_TICKERS:
+        raise HTTPException(
+            422,
+            f"{t} is an exchange-traded fund (ETF). Fund Autopsy currently "
+            f"covers open-end mutual funds only — ETFs file under a "
+            f"different SEC disclosure regime and are on the roadmap. "
+            f"Try a mutual fund ticker instead (examples: VFIAX, FXAIX, "
+            f"AGTHX, DODGX, PTTRX).",
+        )
+    if t in _KNOWN_STOCKS:
+        raise HTTPException(
+            422,
+            f"{t} is a publicly-traded stock, not a mutual fund. Fund "
+            f"Autopsy analyzes mutual funds only. Try a fund ticker "
+            f"(examples: VFIAX, FXAIX, AGTHX).",
+        )
+    try:
+        return _identify(ticker)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc))
+
 
 def _fmt_dollars(amount: float) -> str:
     if abs(amount) >= 1e12:
@@ -240,6 +295,83 @@ def _fmt_dollars(amount: float) -> str:
     if abs(amount) >= 1e6:
         return f"${amount / 1e6:.1f}M"
     return f"${amount:,.0f}"
+
+
+def compute_affiliated_concentration(
+    affiliated_brokers: list,
+    aggregate_commission: Optional[float],
+) -> tuple[Optional[float], Optional[float]]:
+    """Return (affiliated_dollars, affiliated_percent) from N-CEN data.
+
+    Pulled out of the /api/analyze handler so it can be unit-tested
+    without spinning up FastAPI or the full pipeline. Both outputs
+    are None when either (a) there are no affiliated brokers in the
+    N-CEN or (b) aggregate commission data is missing or zero.
+
+    Args:
+        affiliated_brokers: list of BrokerRecord-like objects with a
+            gross_commission attribute.
+        aggregate_commission: total broker commissions paid by the
+            fund during the N-CEN reporting period.
+
+    Returns:
+        (affiliated_commission_dollars, affiliated_commission_pct)
+    """
+    if not affiliated_brokers:
+        return (0.0, 0.0)
+    aff_total = sum(b.gross_commission for b in affiliated_brokers)
+    if aggregate_commission and aggregate_commission > 0:
+        aff_pct = aff_total / aggregate_commission * 100
+        return (aff_total, aff_pct)
+    return (aff_total, None)
+
+
+def compute_soft_dollar_subsidy(
+    commissions: list,
+    net_assets: Optional[float],
+    years_to_average: int = 3,
+) -> tuple[Optional[float], Optional[float], Optional[int], int]:
+    """Compute soft-dollar subsidy estimate from SAI commission data.
+
+    Extracted from /api/sai handler so it can be exercised without
+    network. Takes the three most recent years (by default) of SAI
+    disclosed research commissions, averages them, and converts to
+    basis points against the fund's net assets.
+
+    Args:
+        commissions: list of BrokerageCommissions-like objects each
+            carrying a `soft_dollar_commissions: dict[int, float]`
+            mapping year to dollar amount.
+        net_assets: fund net assets from N-PORT.
+        years_to_average: max years to include in the average.
+
+    Returns:
+        (dollars, bps, most_recent_year, years_averaged)
+        — dollars is None when no SAI soft-dollar data is present
+        — bps is None when net_assets is not available
+        — most_recent_year is None when no data
+        — years_averaged is 0 when no data
+    """
+    recent_total = 0.0
+    recent_year: Optional[int] = None
+    years_averaged = 0
+    for bc in commissions:
+        if not getattr(bc, "soft_dollar_commissions", None):
+            continue
+        years_sorted = sorted(bc.soft_dollar_commissions.keys(), reverse=True)
+        take = years_sorted[:years_to_average]
+        if take:
+            avg = sum(bc.soft_dollar_commissions[y] for y in take) / len(take)
+            recent_total += avg
+            years_averaged = max(years_averaged, len(take))
+        if recent_year is None or years_sorted[0] > recent_year:
+            recent_year = years_sorted[0]
+    if recent_total == 0 and years_averaged == 0:
+        return (None, None, None, 0)
+    bps: Optional[float] = None
+    if net_assets and net_assets > 0:
+        bps = round(recent_total / net_assets * 10_000, 2)
+    return (recent_total, bps, recent_year, years_averaged)
 
 
 def _compute_dollar_impact(
@@ -325,7 +457,30 @@ def analyze_fund(ticker: str):
         from fundautopsy.core.rollup import rollup_costs
         from fundautopsy.data.prospectus import retrieve_prospectus_fees as _get_fees
 
-        fund = identify_fund(ticker)
+        try:
+            fund = identify_fund(ticker)
+        except ValueError as e:
+            # Graceful ETF + common non-mutual-fund handling. A user
+            # typing SPY, QQQ, VTI, or a stock ticker should see a
+            # specific message rather than a generic "not found" 404.
+            etfs_known = {
+                "SPY", "QQQ", "VTI", "VOO", "IVV", "VEA", "VWO", "BND",
+                "AGG", "IEFA", "IEMG", "IJH", "IJR", "VUG", "VTV", "VGT",
+                "VNQ", "ARKK", "SOXX", "XLK", "XLF", "XLE", "XLV", "XLI",
+                "TQQQ", "SQQQ", "GLD", "SLV", "TLT", "IEF", "SHY",
+            }
+            t = ticker.upper()
+            if t in etfs_known:
+                raise HTTPException(
+                    422,
+                    f"{t} is an exchange-traded fund (ETF). Fund Autopsy "
+                    f"currently covers open-end mutual funds only — ETFs "
+                    f"use a different SEC disclosure regime (N-CSR(S), "
+                    f"SCHEDULE 13G, etc.) and are on the roadmap. Try a "
+                    f"mutual fund ticker instead (examples: VFIAX, FXAIX, "
+                    f"AGTHX, DODGX).",
+                )
+            raise HTTPException(404, str(e))
         tree = detect_structure(fund)
 
         # Fetch prospectus data early so turnover feeds into cost estimates
@@ -823,10 +978,9 @@ def analyze_sai(ticker: str):
         raise HTTPException(400, "Invalid ticker format")
 
     try:
-        from fundautopsy.core.fund import identify_fund
         from fundautopsy.data.sai_parser import parse_sai_for_cik
 
-        fund = identify_fund(ticker)
+        fund = _resolve_or_explain(ticker)
         result = parse_sai_for_cik(fund.cik)
 
         if result is None or not result.has_data:
@@ -884,21 +1038,29 @@ def analyze_sai(ticker: str):
             )
 
         # Compute soft-dollar subsidy estimate when SAI breaks out
-        # research commissions directly. The subsidy number is the
-        # most recent year's research-commission total across all
-        # funds in the SAI (most SAIs aggregate at the trust level).
-        # Convert to basis points using the analyzed fund's N-PORT
-        # net assets when we can fetch them cheaply.
+        # research commissions directly. Use a three-year average
+        # (or all available years if fewer than three) to smooth
+        # out lumpy research-payment years that individual filings
+        # sometimes contain. Convert to basis points using the
+        # analyzed fund's N-PORT net assets when we can fetch them
+        # cheaply.
         subsidy = None
         recent_research_total = 0.0
         recent_year = None
+        years_averaged = 0
         for bc in result.commissions:
             if bc.soft_dollar_commissions:
-                # dict[int -> float], year -> dollars. Take the most recent year.
-                latest_year = max(bc.soft_dollar_commissions.keys())
-                recent_research_total += bc.soft_dollar_commissions[latest_year]
-                if recent_year is None or latest_year > recent_year:
-                    recent_year = latest_year
+                # dict[int -> float], year -> dollars
+                years_sorted = sorted(bc.soft_dollar_commissions.keys(), reverse=True)
+                take_years = years_sorted[:3]  # up to three most recent
+                if take_years:
+                    avg = sum(
+                        bc.soft_dollar_commissions[y] for y in take_years
+                    ) / len(take_years)
+                    recent_research_total += avg
+                    years_averaged = max(years_averaged, len(take_years))
+                if recent_year is None or years_sorted[0] > recent_year:
+                    recent_year = years_sorted[0]
 
         has_soft_dollar = (
             result.soft_dollar_info is not None
@@ -921,14 +1083,16 @@ def analyze_sai(ticker: str):
                     bps = recent_research_total / n.total_net_assets * 10_000
             except Exception:
                 bps = None
+            method_note = (
+                f"{years_averaged}-year average of SAI-disclosed research "
+                f"commissions (most recent year: {recent_year}), converted "
+                f"to basis points against the fund's most recent N-PORT "
+                f"net assets."
+            )
             subsidy = SoftDollarSubsidy(
                 estimated_dollars=recent_research_total,
                 estimated_bps=round(bps, 2) if bps is not None else None,
-                methodology=(
-                    f"Sum of SAI-disclosed research commissions for {recent_year}, "
-                    "converted to basis points against the fund's most recent "
-                    "N-PORT net assets."
-                ),
+                methodology=method_note,
                 has_disclosure=True,
             )
             if bps and bps > 1.0:
@@ -1003,9 +1167,7 @@ def fee_history(ticker: str):
         raise HTTPException(400, "Invalid ticker format")
 
     try:
-        from fundautopsy.core.fund import identify_fund
-
-        fund = identify_fund(ticker)
+        fund = _resolve_or_explain(ticker)
         history = track_fee_changes(
             cik=int(fund.cik),
             ticker=ticker,
@@ -1071,9 +1233,7 @@ def analyze_ncsr(ticker: str):
         raise HTTPException(400, "Invalid ticker format")
 
     try:
-        from fundautopsy.core.fund import identify_fund
-
-        fund = identify_fund(ticker)
+        fund = _resolve_or_explain(ticker)
         result = parse_ncsr_for_cik(fund.cik)
 
         if result is None or not result.has_data:
@@ -1138,11 +1298,10 @@ def analyze_derivatives(ticker: str):
         raise HTTPException(400, "Invalid ticker format")
 
     try:
-        from fundautopsy.core.fund import identify_fund
         from fundautopsy.data.edgar import MutualFundIdentifier
         from fundautopsy.data.nport import retrieve_nport
 
-        fund = identify_fund(ticker)
+        fund = _resolve_or_explain(ticker)
         mfid = MutualFundIdentifier(
             ticker=ticker,
             cik=int(fund.cik),
@@ -1231,11 +1390,10 @@ def analyze_geography(ticker: str):
         raise HTTPException(400, "Invalid ticker format")
 
     try:
-        from fundautopsy.core.fund import identify_fund
         from fundautopsy.data.edgar import MutualFundIdentifier
         from fundautopsy.data.nport import retrieve_nport
 
-        fund = identify_fund(ticker)
+        fund = _resolve_or_explain(ticker)
         mfid = MutualFundIdentifier(
             ticker=ticker,
             cik=int(fund.cik),
@@ -1308,10 +1466,9 @@ def analyze_mergers(ticker: str):
         raise HTTPException(400, "Invalid ticker format")
 
     try:
-        from fundautopsy.core.fund import identify_fund
         from fundautopsy.data.n14_parser import retrieve_n14_for_cik
 
-        fund = identify_fund(ticker)
+        fund = _resolve_or_explain(ticker)
         filings = retrieve_n14_for_cik(int(fund.cik), max_filings=5, classify=True)
 
         serialized = [
@@ -1509,6 +1666,248 @@ def portfolio_page():
     from fundautopsy.web.frontend import PORTFOLIO_HTML
 
     return PORTFOLIO_HTML
+
+
+@app.get("/leaderboard", response_class=HTMLResponse)
+def leaderboard_page():
+    """Worst-offender leaderboard page.
+
+    Renders a server-generated ranked table of the funds currently in
+    the leaderboard cache, sorted by hidden cost. This page is the
+    landing target for Reddit, Hacker News, and Twitter/X share links
+    because it does not require a ticker input.
+    """
+    entries = get_leaderboard(sort_by="hidden_cost_mid_bps", limit=50)
+    rows_html = []
+    for i, e in enumerate(entries, 1):
+        hidden = e.get("hidden_cost_mid_bps") or 0
+        er = e.get("expense_ratio_bps") or 0
+        family = e.get("family", "") or ""
+        rows_html.append(
+            f"<tr>"
+            f"<td>{i}</td>"
+            f"<td><a href='/?ticker={e['ticker']}' style='color:#ef4444'>{e['ticker']}</a></td>"
+            f"<td>{e.get('name', '')[:60]}</td>"
+            f"<td>{family[:30]}</td>"
+            f"<td style='text-align:right'>{er:.0f} bps</td>"
+            f"<td style='text-align:right;color:#ef4444;font-weight:600'>{hidden:.0f} bps</td>"
+            f"<td style='text-align:right'>{e.get('net_assets_display', '')}</td>"
+            f"</tr>"
+        )
+    rows = "\n".join(rows_html) if rows_html else (
+        "<tr><td colspan='7' style='text-align:center;padding:40px;color:#a1a1aa'>"
+        "Leaderboard populates as funds are analyzed. "
+        "Query a ticker from the home page first."
+        "</td></tr>"
+    )
+
+    return f"""<!DOCTYPE html>
+<html lang='en'>
+<head>
+<meta charset='UTF-8'>
+<meta name='viewport' content='width=device-width, initial-scale=1.0'>
+<title>Fund Autopsy — Worst Offenders Leaderboard</title>
+<meta name='description' content='Live ranked leaderboard of mutual funds by hidden cost of ownership. Open-source tool built on SEC filings.'>
+<meta property='og:type' content='website'>
+<meta property='og:title' content='Fund Autopsy — Worst Offenders Leaderboard'>
+<meta property='og:description' content='Live ranked list of mutual funds by hidden cost of ownership, sorted by sub-NAV drag in basis points.'>
+<meta property='og:url' content='https://fund-autopsy.onrender.com/leaderboard'>
+<meta name='twitter:card' content='summary_large_image'>
+<meta name='twitter:site' content='@ejbaldwin_'>
+<meta name='twitter:title' content='Fund Autopsy — Worst Offenders Leaderboard'>
+<meta name='twitter:description' content='Live ranked list of mutual funds by hidden cost of ownership, sorted by sub-NAV drag in basis points.'>
+<link rel='stylesheet' href='/static/styles.css'>
+<style>
+body {{ background: #0a0a0b; color: #e4e4e7; font-family: 'Inter', sans-serif; margin: 0; padding: 0; }}
+.container {{ max-width: 1100px; margin: 0 auto; padding: 32px 24px; }}
+h1 {{ font-weight: 800; font-size: 28px; margin: 0 0 8px 0; }}
+.subtitle {{ color: #a1a1aa; font-size: 14px; margin-bottom: 24px; }}
+table {{ width: 100%; border-collapse: collapse; background: #18181b; border-radius: 12px; overflow: hidden; }}
+th {{ text-align: left; padding: 12px; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: #a1a1aa; background: #27272a; }}
+td {{ padding: 12px; font-size: 13px; border-bottom: 1px solid #27272a; }}
+tr:last-child td {{ border-bottom: none; }}
+a {{ text-decoration: none; }}
+.back {{ color: #60a5fa; font-size: 14px; margin-bottom: 16px; display: inline-block; }}
+.footer {{ margin-top: 32px; font-size: 12px; color: #a1a1aa; line-height: 1.6; }}
+@media (max-width: 700px) {{
+  .container {{ padding: 16px 12px; }}
+  th, td {{ padding: 8px 6px; font-size: 12px; }}
+}}
+</style>
+</head>
+<body>
+<div class='container'>
+<a href='/' class='back'>&larr; Back to analyzer</a>
+<h1>Worst Offenders</h1>
+<p class='subtitle'>Mutual funds ranked by hidden cost of ownership (sub-NAV drag in basis points). Click any ticker to see the full cost breakdown. Powered by live SEC filings, updated as funds are analyzed.</p>
+<table>
+<thead><tr>
+<th>#</th><th>Ticker</th><th>Fund</th><th>Family</th>
+<th style='text-align:right'>Expense Ratio</th>
+<th style='text-align:right'>Hidden Cost</th>
+<th style='text-align:right'>Net Assets</th>
+</tr></thead>
+<tbody>
+{rows}
+</tbody>
+</table>
+<div class='footer'>
+Fund Autopsy &middot; <a href='https://github.com/Tombstone-Research/fund-autopsy' style='color:#60a5fa'>GitHub</a> &middot; <a href='https://github.com/Tombstone-Research/fund-autopsy/blob/main/research/working_paper_01_beneath_the_expense_ratio.md' style='color:#60a5fa'>Working paper</a>
+<br><br>
+All cost estimates derived from public SEC filings (N-CEN, N-PORT, 497K, 485BPOS, SAI, N-CSR). Methodology is documented in the working paper. Tombstone Research is not a registered investment adviser.
+</div>
+</div>
+</body>
+</html>"""
+
+
+@app.get("/methodology", response_class=HTMLResponse)
+def methodology_page():
+    """Plain-English methodology summary for journalists and academics.
+
+    A dedicated page so reviewers who click through from outreach
+    emails land on the methodology without needing to download the
+    working-paper PDF first. Summary in markdown-rendered HTML with
+    links to the deeper artifacts (working paper, stress test data,
+    test suite coverage report).
+    """
+    return """<!DOCTYPE html>
+<html lang='en'>
+<head>
+<meta charset='UTF-8'>
+<meta name='viewport' content='width=device-width, initial-scale=1.0'>
+<title>Fund Autopsy — Methodology</title>
+<meta name='description' content='Methodology behind Fund Autopsy. Six SEC filing types, named data-source tags, reproducible stress tests, open-source code.'>
+<meta property='og:title' content='Fund Autopsy — Methodology'>
+<meta property='og:description' content='How the cost numbers are derived. Every metric traces to a specific SEC filing.'>
+<meta property='og:type' content='article'>
+<meta name='twitter:card' content='summary_large_image'>
+<meta name='twitter:site' content='@ejbaldwin_'>
+<link rel='stylesheet' href='/static/styles.css'>
+<style>
+body { background: #0a0a0b; color: #e4e4e7; font-family: 'Inter', sans-serif; margin: 0; padding: 0; line-height: 1.6; }
+.container { max-width: 760px; margin: 0 auto; padding: 40px 24px; }
+h1 { font-weight: 800; font-size: 32px; margin: 0 0 16px 0; }
+h2 { font-weight: 600; font-size: 22px; margin: 32px 0 12px 0; color: #fafafa; border-bottom: 1px solid #27272a; padding-bottom: 8px; }
+h3 { font-weight: 600; font-size: 16px; margin: 20px 0 8px 0; color: #fafafa; }
+p { color: #d4d4d8; font-size: 15px; margin: 12px 0; }
+code { background: #18181b; padding: 2px 6px; border-radius: 4px; font-family: 'JetBrains Mono', monospace; font-size: 13px; color: #fbbf24; }
+a { color: #60a5fa; text-decoration: none; }
+a:hover { text-decoration: underline; }
+.back { font-size: 14px; margin-bottom: 16px; display: inline-block; }
+.badge { display: inline-block; background: #18181b; border: 1px solid #27272a; padding: 4px 10px; border-radius: 6px; font-size: 11px; color: #a1a1aa; margin-right: 6px; margin-bottom: 6px; }
+ul { padding-left: 20px; }
+li { margin: 6px 0; }
+</style>
+</head>
+<body>
+<div class='container'>
+<a href='/' class='back'>&larr; Back to analyzer</a>
+<h1>Methodology</h1>
+<p>Fund Autopsy parses six SEC filing types at the share-class level and surfaces cost, conflict, and governance detail that the expense ratio does not capture. This page documents how each surfaced number is derived and where the underlying data lives on EDGAR.</p>
+
+<div>
+<span class='badge'>Open Source (MIT)</span>
+<span class='badge'>Reproducible Stress Tests</span>
+<span class='badge'>75+ Unit Tests</span>
+<span class='badge'>CI Gated</span>
+<span class='badge'>Data-Source Tagged</span>
+</div>
+
+<h2>Data sources</h2>
+<p>Every metric on the dashboard traces to one of these six filings. Each filing is publicly available on SEC EDGAR.</p>
+<ul>
+<li><strong>Form N-CEN</strong> — Annual census report. Brokerage commissions, soft-dollar arrangements, affiliated-broker routing, securities-lending revenue, service providers.</li>
+<li><strong>Form N-PORT</strong> — Quarterly portfolio holdings (made public after a 60-day lag). Complete holdings list, asset class classifications, issuer country, derivative positions with counterparty and notional data.</li>
+<li><strong>Form 497K</strong> — Summary prospectus. Expense ratio, management fee, 12b-1 fee, other expenses, portfolio turnover.</li>
+<li><strong>Form 485BPOS</strong> — Statutory prospectus. Structured XBRL fee facts used as fallback when the 497K HTML is incomplete or unavailable. Covers the <code>oef:</code> (Open-ended Fund) and <code>rr:</code> (Risk/Return) XBRL taxonomies.</li>
+<li><strong>Statement of Additional Information (SAI)</strong> — Filed with 485BPOS. Broker-specific commission breakdowns, portfolio manager compensation structure, soft-dollar research arrangements.</li>
+<li><strong>Form N-CSR</strong> — Semiannual shareholder report. Audited commission history, turnover from financial highlights, board advisory contract approval narrative.</li>
+</ul>
+
+<h2>Data-source transparency</h2>
+<p>Every numeric field carries a source tag so a reader can see whether a number was reported directly, calculated from reported data, or estimated from a model:</p>
+<ul>
+<li><strong>REPORTED</strong> — Directly from the filing.</li>
+<li><strong>CALCULATED</strong> — Computed from other reported fields.</li>
+<li><strong>ESTIMATED</strong> — Derived using documented model assumptions.</li>
+<li><strong>UNAVAILABLE</strong> — Expected but missing from the filing.</li>
+<li><strong>NOT_DISCLOSED</strong> — Fund acknowledged but did not report amounts.</li>
+</ul>
+
+<h2>Novel metrics</h2>
+
+<h3>Sub-NAV drag</h3>
+<p>The sum of brokerage commissions, bid-ask spreads, and market impact that hits returns before the expense ratio is deducted. Commissions come from N-CEN directly. Spreads and impact are estimated from N-PORT asset mix and turnover.</p>
+
+<h3>Affiliated commission concentration</h3>
+<p>The share of aggregate commissions routed through broker-dealers affiliated with the fund adviser. Computed from N-CEN Item C.6. Displayed as a percentage with green/yellow/red color coding: below 20% is routine, 20-50% is elevated, above 50% is structural.</p>
+
+<h3>Soft-dollar subsidy estimate</h3>
+<p>Three-year average of SAI-disclosed research commissions, converted to basis points against the fund's most recent N-PORT net assets. Surfaces the dollar amount of research the fund's shareholders effectively subsidize on behalf of the adviser.</p>
+
+<h3>Derivative notional footprint</h3>
+<p>Aggregate USD notional of derivative positions from N-PORT Item C, across forwards, swaps, futures, and options/swaptions/warrants. Expressed both in raw dollars and as a percentage of fund net assets.</p>
+
+<h3>Geographic issuer concentration</h3>
+<p>Issuer country (N-PORT <code>invCountry</code>) weighted by percentage of net assets. Three named modes: <code>net</code> (signed, economically correct), <code>gross_long</code> (filters to positive positions), <code>gross_absolute</code> (sums absolute values). Dashboard displays net by default with a footnote when the top country exceeds 100% (which happens for leveraged bond funds with synthetic short positions).</p>
+
+<h2>Coverage</h2>
+<p>Validated against a 68-ticker stratified stress set covering indexed equity (18), active equity (22), active bond (6), target-date across five sponsors (19), sector, international, boutique active, and a fund-of-funds wrapper: <strong>68/68 pass</strong> with zero exceptions. A 250-ticker broader stress test is in progress; results appear at <code>Intelligence/publication_stress_2026-04-23/summary.md</code> in the repository when complete.</p>
+
+<h2>Reproducibility</h2>
+<p>Everything is reproducible. Code is MIT-licensed on <a href='https://github.com/Tombstone-Research/fund-autopsy'>GitHub</a>. The stress-test runners live in <code>Intelligence/</code>. Unit tests covering the critical parsers live in <code>tests/</code>. CI runs the full suite with a coverage threshold on every push and executes a pseudonymity scan as a blocking step.</p>
+
+<h2>Limitations</h2>
+<ul>
+<li>N-CEN data begins in 2018; no structured soft-dollar data before that.</li>
+<li>N-CEN is filed annually; commission data can be up to 12 months old.</li>
+<li>Bid-ask spread and market impact are model estimates, not observed execution costs.</li>
+<li>Form CRS and Form ADV parsers are roadmap items, not yet implemented.</li>
+<li>Post-target-date dormant TDFs (funds past their target year whose sponsors have stopped filing per-class summary prospectuses) are a known disclosure edge case.</li>
+<li>Exchange-traded funds are out of scope; ETF filings follow a different SEC regime.</li>
+</ul>
+
+<h2>Citation</h2>
+<p>Tombstone Research (2026). <em>Beneath the Expense Ratio: Ten Disclosure Dimensions in SEC Form N-CEN That Industry Cost Analysis Systematically Omits.</em> Working Paper No. 1. <a href='https://github.com/Tombstone-Research/fund-autopsy/blob/main/research/working_paper_01_beneath_the_expense_ratio.md'>Full text</a>.</p>
+
+<div style='margin-top: 48px; padding-top: 20px; border-top: 1px solid #27272a; font-size: 12px; color: #a1a1aa;'>
+Fund Autopsy &middot; <a href='https://github.com/Tombstone-Research/fund-autopsy'>GitHub</a> &middot; <a href='/leaderboard'>Leaderboard</a> &middot; <a href='/'>Analyzer</a>
+<br><br>
+Tombstone Research is not a registered investment adviser, broker-dealer, or financial planner. Methodology and code are public for independent verification.
+</div>
+</div>
+</body>
+</html>"""
+
+
+@app.get("/robots.txt")
+def robots_txt():
+    """Open the site to search indexers. Small but lifts discoverability."""
+    from fastapi.responses import PlainTextResponse
+    content = (
+        "User-agent: *\n"
+        "Allow: /\n"
+        "Sitemap: https://fund-autopsy.onrender.com/sitemap.xml\n"
+    )
+    return PlainTextResponse(content=content)
+
+
+@app.get("/sitemap.xml")
+def sitemap_xml():
+    """Static sitemap listing the indexable routes for search engines."""
+    from fastapi.responses import Response
+    today = date.today().isoformat()
+    base = "https://fund-autopsy.onrender.com"
+    content = f"""<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>{base}/</loc><lastmod>{today}</lastmod><priority>1.0</priority></url>
+  <url><loc>{base}/leaderboard</loc><lastmod>{today}</lastmod><priority>0.9</priority></url>
+  <url><loc>{base}/methodology</loc><lastmod>{today}</lastmod><priority>0.9</priority></url>
+  <url><loc>{base}/portfolio</loc><lastmod>{today}</lastmod><priority>0.7</priority></url>
+</urlset>
+"""
+    return Response(content=content, media_type="application/xml")
 
 
 @app.get("/health")

@@ -217,30 +217,37 @@ class NPortData:
             counts[cat] = counts.get(cat, 0) + 1
         return counts
 
-    def country_exposure_pct(self) -> dict[str, float]:
+    def country_exposure_pct(
+        self,
+        mode: str = "net",
+    ) -> dict[str, float]:
         """Weight allocation by issuer country as % of net assets.
 
         Uses the `<invCountry>` ISO-2 country code that N-PORT reports
         per holding (this is the issuer's country, not necessarily the
-        country of risk or the trading venue). Sums `pct_of_net_assets`
-        across holdings grouped by country code. Holdings without a
-        country code bucket to 'UNKNOWN'. Returned dict is sorted
-        descending by weight.
+        country of risk or the trading venue).
 
-        Caveat: leveraged bond funds that run short positions report
-        negative `pctVal` for the short leg. Aggregating gross longs by
-        country can produce sums above 100% (PIMCO Total Return
-        reported 106% US exposure in its most recent N-PORT because
-        the fund's synthetic short book offsets some of the gross
-        long position elsewhere). This is legitimate — the output
-        measures gross issuer exposure, not net market exposure — but
-        a consumer of this metric should not interpret "US: 106%" as
-        leverage evidence without reading the fund's derivatives book.
+        Modes:
+          'net' (default): sums pctVal directly, which is signed in
+            N-PORT — short positions contribute negative weight. For
+            leveraged bond funds this produces the economically-correct
+            net-exposure view and keeps country totals near 100%.
+          'gross_long': filters to positions with positive pctVal only.
+            Historical behavior; can exceed 100% for funds running
+            synthetic shorts.
+          'gross_absolute': sums absolute value of pctVal. Measures
+            total issuer exposure regardless of direction.
+
+        Returned dict is sorted descending by weight.
         """
         exposure: dict[str, float] = {}
         for h in self.holdings:
             country = (h.investment_country or "UNKNOWN").strip().upper() or "UNKNOWN"
             weight = h.pct_of_net_assets or 0.0
+            if mode == "gross_long" and weight < 0:
+                continue
+            if mode == "gross_absolute":
+                weight = abs(weight)
             exposure[country] = exposure.get(country, 0.0) + weight
         return dict(sorted(exposure.items(), key=lambda kv: -kv[1]))
 

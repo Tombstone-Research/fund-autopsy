@@ -19,7 +19,19 @@ from datetime import date
 from typing import Optional
 
 import httpx
-from defusedxml.lxml import fromstring as _safe_fromstring
+from lxml import etree as _etree
+
+# XXE-hardened lxml parser replacing deprecated defusedxml.lxml.
+_SAFE_NCEN_PARSER = _etree.XMLParser(
+    resolve_entities=False,
+    no_network=True,
+    dtd_validation=False,
+    load_dtd=False,
+)
+
+
+def _safe_fromstring(content):
+    return _etree.fromstring(content, _SAFE_NCEN_PARSER)
 from lxml import etree
 
 from fundautopsy.models.filing_data import NCENData, DataSourceTag, TaggedValue

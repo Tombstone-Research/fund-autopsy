@@ -1154,7 +1154,9 @@ async function fetchFeeHistory(ticker) {
 async function fetchDerivatives(ticker) {
   const section = document.getElementById('derivativesSection');
   const content = document.getElementById('derivativesContent');
-  section.style.display = 'none';
+  // Show loading spinner immediately; hide if fetch fails or returns empty
+  section.style.display = 'block';
+  content.innerHTML = '<div class="panel-loading">Parsing N-PORT derivative positions…</div>';
 
   try {
     const resp = await fetch(`/api/derivatives/${ticker}`);
@@ -1164,6 +1166,7 @@ async function fetchDerivatives(ticker) {
     const count = d.derivative_positions_count || 0;
     if (count === 0) {
       // No derivatives — surface a positive finding rather than a panel
+      section.style.display = 'none';
       addFinding('✓', 'Derivatives:', 'None reported on most recent N-PORT', 'green');
       return;
     }
@@ -1285,7 +1288,10 @@ async function fetchDerivatives(ticker) {
     }
 
     content.innerHTML = html;
-  } catch (e) { /* Derivatives is supplementary */ }
+  } catch (e) {
+    // Graceful error render rather than blank panel
+    content.innerHTML = '<div class="panel-error">Could not load derivatives data. The fund may not have a current N-PORT filing, or the endpoint is temporarily unavailable.</div>';
+  }
 }
 
 // ── Geographic exposure (N-PORT invCountry aggregate) ──
@@ -1293,15 +1299,22 @@ async function fetchDerivatives(ticker) {
 async function fetchGeography(ticker) {
   const section = document.getElementById('geographySection');
   const content = document.getElementById('geographyContent');
-  section.style.display = 'none';
+  section.style.display = 'block';
+  content.innerHTML = '<div class="panel-loading">Aggregating N-PORT issuer countries…</div>';
 
   try {
     const resp = await fetch(`/api/geography/${ticker}`);
-    if (!resp.ok) return;
+    if (!resp.ok) {
+      section.style.display = 'none';
+      return;
+    }
     const d = await resp.json();
 
     const top = d.top_countries || [];
-    if (top.length === 0) return;
+    if (top.length === 0) {
+      section.style.display = 'none';
+      return;
+    }
 
     // X-Ray finding: single-country concentration > 95% is typical for
     // a U.S. index fund; between 70-95% is a developed-markets tilt.
@@ -1363,7 +1376,9 @@ async function fetchGeography(ticker) {
     }
 
     content.innerHTML = html;
-  } catch (e) { /* Geography is supplementary */ }
+  } catch (e) {
+    content.innerHTML = '<div class="panel-error">Could not load geographic exposure. The fund may lack a recent N-PORT filing.</div>';
+  }
 }
 
 // ── Mergers / Reorganizations (Form N-14) ──
@@ -1371,15 +1386,20 @@ async function fetchGeography(ticker) {
 async function fetchMergers(ticker) {
   const section = document.getElementById('mergersSection');
   const content = document.getElementById('mergersContent');
-  section.style.display = 'none';
+  section.style.display = 'block';
+  content.innerHTML = '<div class="panel-loading">Checking for N-14 reorganization filings…</div>';
 
   try {
     const resp = await fetch(`/api/mergers/${ticker}`);
-    if (!resp.ok) return;
+    if (!resp.ok) {
+      section.style.display = 'none';
+      return;
+    }
     const d = await resp.json();
 
     if (!d.filings || d.filings.length === 0) {
       // Quiet case — no N-14 on file. Don't clutter the Deep Dive.
+      section.style.display = 'none';
       return;
     }
 
@@ -1399,7 +1419,9 @@ async function fetchMergers(ticker) {
       const classLabel = {
         'same-complex': 'Same-complex consolidation',
         'cross-complex': 'Cross-complex merger',
-        'partial': 'Reorganization (partial info)',
+        'partial': 'Reorganization (partial info extracted)',
+        'reorganization': 'Reorganization (filing text reviewed)',
+        'filing-available': 'Reorganization filing on record',
         'unknown': 'Reorganization',
       }[f.reorganization_type] || 'Reorganization';
 
@@ -1430,7 +1452,9 @@ async function fetchMergers(ticker) {
     });
 
     content.innerHTML = html;
-  } catch (e) { /* Mergers is supplementary */ }
+  } catch (e) {
+    content.innerHTML = '<div class="panel-error">Could not load merger filings. Endpoint may be temporarily unavailable.</div>';
+  }
 }
 
 function formatNumber(n) {

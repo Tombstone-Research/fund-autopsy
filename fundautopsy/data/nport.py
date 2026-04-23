@@ -19,8 +19,22 @@ from datetime import date
 from typing import Optional
 
 import httpx
-from defusedxml.lxml import fromstring as _safe_fromstring
 from lxml import etree
+
+# XXE-safe XML parser. `defusedxml.lxml` is deprecated; the current
+# recommendation is to configure an lxml parser with entity resolution
+# and external DTD access disabled. SEC N-PORT XML is public data but
+# we parse it with XXE-hardened settings on principle.
+_SAFE_PARSER = etree.XMLParser(
+    resolve_entities=False,
+    no_network=True,
+    dtd_validation=False,
+    load_dtd=False,
+)
+
+
+def _safe_fromstring(content):
+    return etree.fromstring(content, _SAFE_PARSER)
 
 from fundautopsy.models.filing_data import NPortData, NPortHolding
 

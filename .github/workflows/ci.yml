@@ -35,10 +35,20 @@ jobs:
         run: |
           mypy fundautopsy/ --ignore-missing-imports
 
-      - name: Run tests
+      - name: Run tests with coverage threshold
         run: |
-          python -m pytest tests/ -v --tb=short --cov=fundautopsy --cov-report=term-missing
+          # Fail the build if test coverage drops below the floor.
+          # Starting floor is intentionally conservative; raise over
+          # time as test coverage compounds.
+          python -m pytest tests/ -v --tb=short \
+            --cov=fundautopsy \
+            --cov-report=term-missing \
+            --cov-fail-under=40
 
       - name: Check imports
         run: |
           python -c "import fundautopsy; print(f'fundautopsy {fundautopsy.__version__} imported successfully')"
+
+      - name: Pseudonymity leak scan
+        run: |
+          bash scripts/check_pseudonymity.sh
