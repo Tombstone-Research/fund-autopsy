@@ -1,17 +1,3 @@
----
-title: "Beneath the Expense Ratio"
-subtitle: "Ten Disclosure Dimensions in SEC Form N-CEN That Industry Cost Analysis Systematically Omits"
-series: "Tombstone Research Working Paper"
-number: 1
-author: "E. J. Baldwin"
-affiliation: "Tombstone Research"
-version: "1.1"
-date: "2026-04-22"
-keywords: [mutual funds, N-CEN, soft dollars, securities lending, fund governance, total cost of ownership, transparency]
-abstract_length_words: 240
-status: draft for publication review
----
-
 # Beneath the Expense Ratio
 ### Ten Disclosure Dimensions in SEC Form N-CEN That Industry Cost Analysis Systematically Omits
 
